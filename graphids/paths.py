@@ -22,7 +22,7 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 # Concrete Literal — Pydantic needs this for field validation.
-ModelType = Literal["vehicle_graph_mamba_joint"]
+ModelType = Literal["event_graph_mamba"]
 
 
 # ---------------------------------------------------------------------------

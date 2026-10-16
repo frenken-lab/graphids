@@ -10,8 +10,8 @@ it with `sbatch`.
 Useful commands:
 
 ```bash
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer
-gx exp submit configs/experiments/gat_snapshot_sequence_real.yml -C pitzer --dry-run
+gx exp submit configs/experiments/graph_mamba_events_source.yml -C ascend
+gx exp submit configs/experiments/graph_mamba_events_source.yml -C ascend --dry-run
 ```
 
 ## `graphids.exp.slurm`

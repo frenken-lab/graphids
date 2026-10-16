@@ -1,12 +1,11 @@
 # GraphIDS
 
-CAN bus intrusion detection with a shared graph-Mamba model. Causal physical-time
-snapshots feed per-ID temporal Mamba blocks, a same-time graph readout, and
-separate classification and normal-forecasting heads. The Ray-backed experiment
-runner supports pooled CAN datasets and data parallel training.
-
-Read [Graph Mamba training and evaluation](reference/graph-mamba.md) for the
-recording manifest, architecture, migration, and functional gates.
+CAN bus intrusion detection with graph–Mamba models. New learning work uses
+[message-preserving inputs](reference/graph-mamba-events.md): individual CAN
+frames enter a bus-sequence Mamba encoder and learned causal graph readout.
+The [snapshot implementation](reference/graph-mamba.md) is archived for reproduction.
+The active Ray/Lightning/Slurm experiment path uses continuous event history and
+independent recording streams on one GPU.
 
 ## Where to start
 

@@ -110,7 +110,7 @@ def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
             self.callback_metrics = {}
             self.global_step = 0
 
-        def fit(self, model, datamodule):
+        def fit(self, model, datamodule, ckpt_path=None):
             captured["fit"] = (model, datamodule)
 
     class DummyLightning:
@@ -194,7 +194,7 @@ def test_build_lightning_run_uses_lightning_module_compile(monkeypatch):
             self.callback_metrics = {}
             self.global_step = 0
 
-        def fit(self, model, datamodule):
+        def fit(self, model, datamodule, ckpt_path=None):
             captured["fit"] = (model, datamodule)
 
     class DummyLightning:

@@ -16,11 +16,12 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from graphids.core.data.events.representation import CANEventRepresentationCfg
 from graphids.core.data.preprocessing.representations import (
     RepresentationCfg,
+    parse_representation,
     representation_kind,
 )
-from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
 from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
@@ -54,6 +55,12 @@ def load_experiment_yaml(
     try:
         value = yaml.safe_load(path.read_text())
     except FileNotFoundError as exc:
+        from graphids.migration import RETIRED_EXPERIMENTS
+
+        if path.name in RETIRED_EXPERIMENTS:
+            raise ValueError(
+                f"retired experiment {path.name}: restore archives/snapshot-2026-10-16.tar.gz in a separate directory; use configs/experiments/graph_mamba_events_source.yml"
+            ) from exc
         parent = f" (extended by {_parents[-1]})" if _parents else ""
         raise FileNotFoundError(f"experiment YAML not found: {path}{parent}") from exc
     if not isinstance(value, dict):
@@ -151,6 +158,15 @@ def _current_git_sha() -> str:
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_representation(cls, value):
+        if isinstance(value, dict):
+            rep = value.get("representation_cfg")
+            if isinstance(rep, dict) and rep.get("kind") == "can_snapshot":
+                parse_representation(rep)
+        return value
+
 
 class ResourceConfig(_StrictModel):
     """Execution resources for a run."""
@@ -184,14 +200,25 @@ class FitRunPayload(_StrictModel):
 
         reject_retired(self.model)
         reject_retired(self.data)
-        if self.model.get("type") == "vehicle_graph_mamba_joint":
-            from graphids.primitives_models import VehicleGraphMambaJointCfg
+        if self.model.get("type") == "event_graph_mamba":
+            from graphids.primitives_models import EventGraphMambaCfg
 
-            VehicleGraphMambaJointCfg.model_validate(self.model)
-        if self.data.get("type") == "can_snapshot_dm":
-            from graphids.primitives_data import CANSnapshotDMCfg
+            EventGraphMambaCfg.model_validate(self.model)
+            if self.data.get("type") != "can_event_dm":
+                raise ValueError("event_graph_mamba requires can_event_dm")
+        if self.data.get("type") == "can_event_dm":
+            from graphids.primitives_data import CANEventDMCfg
 
-            CANSnapshotDMCfg.model_validate(self.data)
+            CANEventDMCfg.model_validate(self.data)
+            if self.model.get("type") != "event_graph_mamba":
+                raise ValueError("can_event_dm requires event_graph_mamba")
+            if (
+                self.trainer.get("devices", 1) != 1
+                or self.trainer.get("num_nodes", 1) != 1
+            ):
+                raise ValueError(
+                    "the initial event input path requires one device and one node"
+                )
         return self
 
 
@@ -233,7 +260,7 @@ class RunConfig(_StrictModel):
     plan_id: str | None = None
     git_sha: str = "unknown"
     representation_cfg: RepresentationCfg = Field(
-        default_factory=CANSnapshotRepresentationCfg
+        default_factory=CANEventRepresentationCfg
     )
     payload: RunPayload = Field(default_factory=FitRunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
@@ -322,7 +349,7 @@ class ExperimentConfig(_StrictModel):
     git_sha: str = "unknown"
     plan_id: str | None = None
     representation_cfg: RepresentationCfg = Field(
-        default_factory=CANSnapshotRepresentationCfg
+        default_factory=CANEventRepresentationCfg
     )
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
@@ -371,9 +398,7 @@ class ExperimentConfig(_StrictModel):
                 _representation_payload(self.representation_cfg)
             )
             resolved_data_representation = _json_payload(
-                _representation_payload(
-                    CANSnapshotRepresentationCfg(**data_representation)
-                )
+                _representation_payload(parse_representation(data_representation))
             )
             if resolved_data_representation != run_representation:
                 raise ValueError(

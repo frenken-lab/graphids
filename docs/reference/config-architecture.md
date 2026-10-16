@@ -11,10 +11,10 @@ retired.
 Experiment configs live under `configs/experiments/`.
 
 ```bash
-gx exp config configs/experiments/temporal_event_classifier_smoke.yml
-gx exp launch configs/experiments/temporal_event_classifier_smoke.yml
-gx exp submit configs/experiments/temporal_event_classifier_smoke.yml -C pitzer
-gx exp status "$GRAPHIDS_RUN_ROOT/set_01/temporal_event_classifier_smoke/temporal_event_classifier_smoke"
+gx exp config configs/experiments/graph_mamba_events_source.yml
+gx exp launch configs/experiments/graph_mamba_events_source.yml
+gx exp submit configs/experiments/graph_mamba_events_source.yml -C ascend
+gx exp status "$GRAPHIDS_RUN_ROOT/pooled_can/graph_mamba_events_source_seed42/graph_mamba_events_source_seed42"
 ```
 
 The YAML contains:
@@ -34,18 +34,27 @@ experiment file. Shared partial configs live in `configs/experiments/_base/`;
 launch a leaf experiment rather than a base.
 
 ```yaml
-extends: ../_base/comparisons.yml
-experiment_name: temporal_set_01_segmented_lanes256_epoch
-dataset: set_01
+experiment_name: graph_mamba_events_source_seed42
+dataset: pooled_can
+seed: 42
 stage: fit
+representation_cfg:
+  kind: can_event
+  schema_version: 1
 config:
+  model:
+    type: event_graph_mamba
   data:
-    source:
-      dataset: set_01
-    stream_lanes: 256
-    chunk_size: 32
-    coverage_policy: full
-    stream_execution: segmented
+    type: can_event_dm
+    manifest_path: /path/to/reviewed-manifest.json
+    datasets: [set_01, set_03]
+    cache_root: /path/to/event-cache
+    chunk_events: 2048
+    stream_batch_size: 4
+    effective_batch_events: 8192
+  trainer:
+    devices: 1
+    precision: 32-true
 ```
 
 Mappings merge recursively. Child scalars, lists, and explicit nulls replace
@@ -69,20 +78,19 @@ Important classes:
 - `OutputConfig`: run directory, journal, artifact, and checkpoint paths.
 
 For `fit` and `test`, the config layer checks that
-`config.data.source.representation_cfg` matches the top-level
+`config.data.representation_cfg` matches the top-level
 `representation_cfg`. That prevents the run metadata and materialized cache
 from silently drifting.
 
 ## 3. Primitives
 
 `graphids.primitives` is the public primitive module. It re-exports data,
-model, loss, and temporal representation primitives.
+model and message-preserving event representation primitives.
 
 Primitive config objects are Pydantic models with `extra="forbid"`:
 
 - data: `graphids.primitives_data`
 - models: `graphids.primitives_models`
-- losses: `graphids.primitives_losses`
 - representations: `graphids.core.data.preprocessing.representations`
 
 Ray launch instantiation accepts either:
@@ -92,7 +100,7 @@ Ray launch instantiation accepts either:
   importlib.
 
 `graphids.exp.runtime` owns resolution, seeding, model preparation, callbacks,
-and trainer kwargs for both Ray launch and cache-only temporal comparisons.
+and trainer kwargs for Ray launches and bounded event benchmarks.
 Existing imports from `graphids.exp.ray_backend` remain available. This lets
 YAML use compact primitive specs for common objects and explicit class paths for
 callbacks without putting import logic in the YAML loader or CLI.
@@ -126,7 +134,7 @@ completed runs into MLflow.
 
 ## 5. SLURM Submit
 
-`gx exp submit <yaml> -C pitzer` uses `graphids.exp.slurm`:
+`gx exp submit <yaml> -C ascend` uses `graphids.exp.slurm`:
 
 1. Validate the YAML by building a `RunConfig`.
 2. Expand and save a standalone config under `{slurm_log_dir}/scripts/`, named
@@ -149,40 +157,21 @@ source scripts/slurm/_epilog.sh
 `--dry-run` prints the script without submitting. The submit command has
 resource overrides for cluster, partition, walltime, gres, and node count.
 
-## 6. Current Temporal Path
+## 6. Continuous event training
 
-The current cache/training line uses:
+The sole active contract is `can_event` / `can_event_dm` / `event_graph_mamba`.
+Use one GPU and FP32. Training schedules independent chronological recording
+streams, carries history, detaches learned state between chunks, and scores each
+physical row once. `effective_batch_events` controls accumulation with separate
+eligible-target denominators for classification and normal-only payload loss.
+Use `accumulate_grad_batches=1`; configure checkpoint selection with
+`val/classification_frame_ap`. See [the event contract](graph-mamba-events.md).
 
-```yaml
-representation_cfg:
-  kind: temporal
-config:
-  data:
-    type: temporal_dm
-    source:
-      type: can_bus
-      dataset: set_01
-      seed: 42
-      representation_cfg:
-        kind: temporal
-    batch_size: 512
-    val_warmup_events: 64
-    test_warmup_events: 64
-  model:
-    type: temporal_event_classifier
-    scale: small
-```
-
-The preprocessing layer builds temporal event tables and packs them as PyG
-`TemporalData`. The primary batch unit is an event count, not a graph node or
-edge budget. Validation and test splits may include warmup events, which are
-fed through the model but excluded from metrics through `is_scored`.
-
-Available temporal model types are `temporal_event_classifier`,
-`temporal_rnn_classifier`, `temporal_gat`, `temporal_vgae`, and `temporal_hybrid`.
-
-Training configs select a dataset and temporal representation; the data source
-maps that to the versioned cache path under `$GRAPHIDS_LAKE_ROOT/cache`.
+Only epoch-boundary resume is supported through `config.ckpt_path`. The model
+rejects source/config mismatches and checkpoints without complete epoch identity.
+Retired representation, model and loss factories point to the verified snapshot
+archive. Historical datasets, results, clock repairs and reviewed manifests remain
+in place.
 
 ## 7. Adding A Run
 
@@ -190,7 +179,7 @@ maps that to the versioned cache path under `$GRAPHIDS_LAKE_ROOT/cache`.
 2. Validate with `gx exp config <file>`.
 3. For training, set `stage: fit`, callbacks, and trainer options.
 4. For evaluation, set `stage: test` and provide `ckpt_path`.
-5. Submit with `gx exp submit <file> -C pitzer`.
+5. Submit with `gx exp submit <file> -C ascend`.
 6. After completion, run `gx exp ingest <run_dir>` or `gx exp ingest-root <root>`.
 
 Add tests when the YAML exercises new launch behavior, primitive fields, or

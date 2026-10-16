@@ -1,6 +1,6 @@
 # GraphIDS: CAN Bus Intrusion Detection
 
-GraphIDS trains and evaluates one shared graph-Mamba detector over causal CAN snapshots. The current launch surface is typed experiment YAML,
+GraphIDS has a message-preserving graph-Mamba learning path as its sole active implementation. The current launch surface is typed experiment YAML,
 not the retired `graphids/plan` row chassis.
 
 ## Key Commands
@@ -9,14 +9,14 @@ The CLI is `graphids` or its short alias `gx`.
 
 ```bash
 # Validate one experiment YAML.
-gx exp config configs/experiments/graph_mamba_joint.yml
+gx exp config configs/experiments/graph_mamba_events_source.yml
 
 # Launch through Ray Train.
-gx exp launch configs/experiments/graph_mamba_joint.yml
+gx exp launch configs/experiments/graph_mamba_events_source.yml
 
 # Submit to SLURM.
-gx exp submit configs/experiments/graph_mamba_joint.yml -C ascend
-gx exp submit configs/experiments/graph_mamba_joint.yml -C ascend --dry-run
+gx exp submit configs/experiments/graph_mamba_events_source.yml -C ascend
+gx exp submit configs/experiments/graph_mamba_events_source.yml -C ascend --dry-run
 
 # Inspect run state.
 gx exp status "$GRAPHIDS_RUN_ROOT/pooled_can/graph_mamba_joint/graph_mamba_joint"
@@ -113,17 +113,21 @@ runs, `checkpoints/` when checkpointing is enabled.
 
 ## Graph Mamba Training
 
-The sole model is `vehicle_graph_mamba_joint`; the representation is `can_snapshot`
-and the data primitive is `can_snapshot_dm`. See `docs/reference/graph-mamba.md`.
-Stream batching groups live ID segments within a GPU. Data parallel training
-assigns independent recording episodes to GPUs; do not split chronological
-state across ranks or use a padding distributed sampler for evaluation.
+New input work uses `event_graph_mamba`, representation `can_event`, and data
+primitive `can_event_dm`; see `docs/reference/graph-mamba-events.md`. Preserve every
+observed message before learned encoding. Do not replace payload sequences with
+fixed-bin summaries. The initial event path is source-only and single-device.
+Snapshot reproduction uses `archives/snapshot-2026-10-16.tar.gz` in a separate directory.
+Training carries independent recording histories, detaches states at chunk boundaries,
+and normalizes objectives over `effective_batch_events` windows on one GPU.
 
 Raw recording manifests must declare reviewed provenance, hashes, clock units,
 normality, labels, and disjoint reference/query roles. Do not infer supervision
 from filenames, silently sort decreasing clocks, or truncate capacity overflow.
-Preserve bin/forecast alignment, both Mamba caches, node generations and scored
-coverage. The archived event-model stack is at `graphids-temporal-legacy`.
+Preserve physical frame order and scored coverage, both Mamba caches, and state
+identity. Snapshot reproduction additionally preserves bin/forecast alignment
+and node generations. The archived event-model stack is at `graphids-temporal-legacy`;
+the new event path is implemented separately in this repository.
 
 Run pytest and GPU workloads in SLURM allocations; static lint and config
 inspection are login-node safe. Production requires the pinned Mamba CUDA

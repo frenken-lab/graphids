@@ -35,7 +35,7 @@ def sha256(path):
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def compare_log(local, source):
+def compare_log(local, source, *, interface_labels=False):
     """Verify the complete timed-frame multiset under documented curation.
 
     Upstream label.py sorts clocks, including ties. Record original backsteps
@@ -56,6 +56,7 @@ def compare_log(local, source):
                 row["arbitration_id"],
                 row["data_field"],
             )
+            + ((int(row["attack"]),) if interface_labels else ())
             for row in csv.DictReader(raw)
         )
         rows = sum(local_frames.values())
@@ -64,11 +65,15 @@ def compare_log(local, source):
         backsteps = 0
         largest_backstep = 0.0
         original_count = 0
+        interfaces = set()
         for line in original:
             timestamp, _interface, frame = line.split()
+            interfaces.add(_interface)
             timestamp = float(timestamp.strip("()"))
             arb, payload = frame.split("#")
             key = (round(timestamp - offset, 6), arb, payload)
+            if interface_labels:
+                key += (int(_interface in {"vcan1", "vcan3", "vcan5", "vcan7"}),)
             if not local_frames[key]:
                 raise ValueError(
                     f"timed frame differs at original row {original_count + 1}: {local}"
@@ -85,12 +90,18 @@ def compare_log(local, source):
             raise ValueError(f"row count differs: {local}")
     return {
         "rows": rows,
+        "interfaces": sorted(interfaces),
         "acquisition_start": origin,
         "acquisition_end": end,
         "original_decreasing_clock_rows": backsteps,
         "original_largest_backstep_seconds": largest_backstep,
         "correspondence": "complete timed-frame multiset at 1 microsecond precision",
-        "ordering_provenance": "curator label.py sorts timestamps; local order preserved",
+        "labels_from_replay_interfaces_verified": interface_labels,
+        "ordering_provenance": (
+            "can-ml convert_advanced.py preserves replay log order; local order preserved"
+            if interface_labels
+            else "curator label.py sorts timestamps; local order preserved"
+        ),
     }
 
 
@@ -98,10 +109,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--review-root", type=Path, required=True)
     parser.add_argument("--raw-root", type=Path, required=True)
+    parser.add_argument(
+        "--plan", type=Path, help="Explicit capture roles and reviewed scope"
+    )
+    parser.add_argument("--upstream-index", type=Path)
     args = parser.parse_args()
     root = args.review_root
+    plan = json.loads(args.plan.read_text()) if args.plan else None
+    assignments = (
+        {path: item["role"] for path, item in plan["assignments"].items()}
+        if plan
+        else ASSIGNMENTS
+    )
     review = json.loads((root / "recording-review.json").read_text())
-    upstream = json.loads((root / "upstream/pilot-full-sources.json").read_text())
+    upstream = json.loads(
+        (args.upstream_index or root / "upstream/pilot-full-sources.json").read_text()
+    )
     by_hash = {r["sha256"]: r for r in review["recordings"]}
     inventory = {}
     canonical = {}
@@ -112,13 +135,15 @@ def main():
         for path in group:
             inventory[path] = {**by_hash[canonical_record["sha256"]], "path": path}
             canonical[path] = group[0]
-    selected = {canonical[path] for path in ASSIGNMENTS}
+    selected = {canonical[path] for path in assignments}
+    if len(selected) != len(assignments):
+        raise ValueError("selected paths contain exact duplicate aliases")
     if any(set(pair["paths"]) <= selected for pair in review["candidate_reuse"]):
         raise ValueError(
             "selected captures have candidate sequence reuse; review first"
         )
     records, evidence = [], []
-    for path, role in ASSIGNMENTS.items():
+    for path, role in assignments.items():
         rec = inventory[path]
         if rec["bad_clock"] or rec["bad_payload"] or rec["bad_labels"]:
             raise ValueError(f"invalid raw capture: {path}")
@@ -139,6 +164,8 @@ def main():
                 raise ValueError(f"curator label file differs: {path}")
         dataset = path.split("/")[0]
         vehicle = log["source"].split("/")[0]
+        if plan and vehicle != plan["assignments"][path]["vehicle"]:
+            raise ValueError(f"upstream vehicle differs from plan: {path}")
         key = f"{vehicle}/{local.stem}"
         records.append(
             {
@@ -175,13 +202,15 @@ def main():
     (root / "pilot-provenance.json").write_text(
         json.dumps(
             {
-                "reviewed_scope": "CTAT Impala-to-Forester normal/DoS capture pilot only",
+                "reviewed_scope": plan["scope"]
+                if plan
+                else "CTAT Impala-to-Forester normal/DoS capture pilot only",
                 "session_definition": "distinct original acquisition capture, not driving trip/day",
                 "limitations": [
-                    "one underlying dataset family and one target vehicle",
+                    "one underlying dataset family; capture-level independence only",
                     "no independently trusted attack intervals; event/bin metrics only",
                     "sequence fingerprint sampling does not prove absence of all partial reuse",
-                    "target calibration is accessory mode, with fewer observed IDs",
+                    "accessory-mode calibration does not establish driving-mode threshold guarantees",
                     "payload byte counts preserve candump serialization, not independent DLC",
                 ],
                 "recordings": evidence,
@@ -190,6 +219,14 @@ def main():
         )
     )
     manifest = {"version": 1, "provenance_reviewed": True, "records": records}
+    from graphids.core.data.recordings import (
+        CANRecordingManifest,
+        Recording,
+    )
+
+    CANRecordingManifest(tuple(Recording(**r) for r in records), 1, True).validate(
+        verify_files=False
+    )
     (root / "can-recording-manifest-v1.json").write_text(json.dumps(manifest, indent=2))
     print(f"reviewed {len(records)} disjoint acquisition captures")
 

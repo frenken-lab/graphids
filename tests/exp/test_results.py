@@ -23,10 +23,10 @@ def _log_temporal_run(
                 "graphids.dataset": dataset,
             }
         )
-        mlflow.log_metric("test/test/mcc", mcc)
+        mlflow.log_metric("test/classification_frame_ap", mcc)
         mlflow.log_metric("test/test/auroc_macro", 0.9)
         if fuzzing is not None:
-            mlflow.log_metric("test/test/auroc_per_attack/fuzzing", fuzzing)
+            mlflow.log_metric("test/payload_frame_ap", fuzzing)
         return run.info.run_id
 
 
@@ -50,8 +50,8 @@ def test_query_result_view_latest_per_variant(tmp_path):
     assert len(rows) == 1
     assert rows[0].run_id == latest_run
     assert rows[0].run_id != old_run
-    assert rows[0].metrics["test/test/mcc"] == 0.9
-    assert rows[0].metrics["test/test/auroc_per_attack/fuzzing"] == 0.8
+    assert rows[0].metrics["test/classification_frame_ap"] == 0.9
+    assert rows[0].metrics["test/payload_frame_ap"] == 0.8
     cli = CliRunner().invoke(
         app,
         [
@@ -70,4 +70,4 @@ def test_query_result_view_latest_per_variant(tmp_path):
 
     assert cli.exit_code == 0, cli.stderr
     assert latest_run in cli.stdout
-    assert '"test/test/mcc": 0.9' in cli.stdout
+    assert '"test/classification_frame_ap": 0.9' in cli.stdout

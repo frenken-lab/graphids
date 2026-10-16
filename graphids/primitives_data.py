@@ -1,53 +1,51 @@
-"""Snapshot stream batching and pooled CAN data configuration."""
+"""Continuous event stream batching and pooled CAN data configuration."""
 
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from graphids.core.data.snapshots.policy import ReferencePolicy
-from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
+from graphids.core.data.events.representation import CANEventRepresentationCfg
 
 
 class _Cfg(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class CANSnapshotDMCfg(_Cfg):
-    type: Literal["can_snapshot_dm"] = "can_snapshot_dm"
+class CANEventDMCfg(_Cfg):
+    type: Literal["can_event_dm"] = "can_event_dm"
     manifest_path: str
     datasets: list[str]
-    representation_cfg: CANSnapshotRepresentationCfg = Field(
-        default_factory=CANSnapshotRepresentationCfg
+    cache_root: str
+    representation_cfg: CANEventRepresentationCfg = Field(
+        default_factory=CANEventRepresentationCfg
     )
-    sequence_bins: int = Field(default=128, ge=1)
-    warmup_bins: int = Field(default=128, ge=0)
-    stream_batch_size: int = Field(default=1, ge=1)
-    eval_chunk_bins: int = Field(default=256, ge=1)
+    chunk_events: int = Field(default=512, ge=1)
+    warmup_events: Literal[0] = 0
+    stream_batch_size: Literal[1, 2, 4, 8] = 1
+    effective_batch_events: int = Field(default=8192, ge=1)
     num_workers: int = Field(default=0, ge=0)
     pin_memory: bool = False
-    seed: int = 42
-    context_withholding: float = Field(default=0.25, ge=0, le=1)
-    neighbor_cap: int = Field(default=8, ge=1)
-    retention_seconds: float = Field(default=1.0, gt=0)
-    anchor_capacity: int | None = Field(default=None, ge=1)
-    transient_capacity: int | None = Field(default=None, ge=1)
-    max_node_bin_tokens: int = Field(default=131072, ge=1)
-    max_graph_messages: int = Field(default=1048576, ge=1)
-    max_snapshot_bytes: int = Field(default=4 * 1024**3, ge=1)
-    cache_root: str | None = None
-    reference_policy: ReferencePolicy = Field(default_factory=ReferencePolicy)
+
+    @model_validator(mode="after")
+    def validate_microbatch(self):
+        events = self.chunk_events * self.stream_batch_size
+        if events > 8192 or events > self.effective_batch_events:
+            raise ValueError(
+                "microbatch must contain at most 8192 events and fit effective_batch_events"
+            )
+        return self
 
     def build(self):
-        from graphids.core.data.snapshots.datamodule import CANSnapshotDataModule
+        from graphids.core.data.events.data import CANEventDataModule
 
-        values = self.model_dump(exclude={"type", "representation_cfg"})
-        return CANSnapshotDataModule(
-            **values, representation_cfg=self.representation_cfg
+        return CANEventDataModule(
+            **self.model_dump(exclude={"type", "representation_cfg"}),
+            representation_cfg=self.representation_cfg,
         )
 
 
-def can_snapshot_dm(**kwargs) -> CANSnapshotDMCfg:
-    return CANSnapshotDMCfg(**kwargs)
+def can_event_dm(**kwargs) -> CANEventDMCfg:
+    return CANEventDMCfg(**kwargs)
 
 
-DataCfg = Annotated[CANSnapshotDMCfg, Field(discriminator="type")]
+DataCfg = CANEventDMCfg

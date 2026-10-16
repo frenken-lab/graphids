@@ -1,6 +1,6 @@
-"""CAN snapshot preprocessing configuration."""
+"""CAN event preprocessing configuration."""
 
-from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
+from graphids.core.data.events.representation import CANEventRepresentationCfg
 
 from .representations import (
     RepresentationCfg,
@@ -11,7 +11,7 @@ from .representations import (
 
 __all__ = [
     "RepresentationCfg",
-    "CANSnapshotRepresentationCfg",
+    "CANEventRepresentationCfg",
     "representation_digest",
     "representation_kind",
     "representation_payload",

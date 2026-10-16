@@ -1,0 +1,302 @@
+{
+  "scope": "Multi-attack CTAT Impala/Silverado source retraining; Traverse target roles remain reserved",
+  "selection_basis": "Roles fixed using canonical reuse components and original-capture provenance, before multi-attack model scores. Impala normal-2 and its standstill derivatives train; normal-1 and standstill-1 validate. Numbered replay captures split train/validation using their known background reuse groups.",
+  "target_evaluation": "Reserve until source protocol, checkpoint rule and interventions are frozen. Forester excluded as previously inspected diagnostic target.",
+  "assignments": {
+    "set_01/train_01_attack_free/accessory-1.csv": {
+      "role": "train_reference",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/attack-free/accessory-1.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_01_attack_free/attack-free-1.csv": {
+      "role": "val_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/attack-free/attack-free-1.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_02_with_attacks/DoS-1.csv": {
+      "role": "train_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/DoS-attacks/DoS-1.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/DoS-attacks/DoS-1.csv",
+      "attack_family": "dos",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_01_attack_free/accessory-2.csv": {
+      "role": "val_reference",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/attack-free/accessory-2.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_01_attack_free/attack-free-2.csv": {
+      "role": "train_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/attack-free/attack-free-2.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_02_with_attacks/DoS-2.csv": {
+      "role": "val_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/DoS-attacks/DoS-2.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/DoS-attacks/DoS-2.csv",
+      "attack_family": "dos",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_01_attack_free/accessory-3.csv": {
+      "role": "train_reference",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/attack-free/accessory-3.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_01_attack_free/attack-free-3.csv": {
+      "role": "train_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/attack-free/attack-free-3.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_02_with_attacks/DoS-3.csv": {
+      "role": "train_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/DoS-attacks/DoS-3.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/DoS-attacks/DoS-3.csv",
+      "attack_family": "dos",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_01_attack_free/accessory-4.csv": {
+      "role": "val_reference",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/attack-free/accessory-4.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_01_attack_free/attack-free-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/attack-free/attack-free-4.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_03/train_02_with_attacks/DoS-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/DoS-attacks/DoS-4.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/DoS-attacks/DoS-4.csv",
+      "attack_family": "dos",
+      "verify_replay_interface_labels": false
+    },
+    "set_02/train_01_attack_free/accessory-2.csv": {
+      "role": "target_reference",
+      "vehicle": "2011-chevrolet-traverse",
+      "source_log": "2011-chevrolet-traverse/attack-free/accessory-2.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_02/train_01_attack_free/attack-free-2.csv": {
+      "role": "target_reference",
+      "vehicle": "2011-chevrolet-traverse",
+      "source_log": "2011-chevrolet-traverse/attack-free/attack-free-2.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_02/train_01_attack_free/accessory-1.csv": {
+      "role": "target_calibration",
+      "vehicle": "2011-chevrolet-traverse",
+      "source_log": "2011-chevrolet-traverse/attack-free/accessory-1.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_02/train_01_attack_free/attack-free-1.csv": {
+      "role": "target_normal_test",
+      "vehicle": "2011-chevrolet-traverse",
+      "source_log": "2011-chevrolet-traverse/attack-free/attack-free-1.log",
+      "attack_family": "normal",
+      "verify_replay_interface_labels": false
+    },
+    "set_02/test_03_known_vehicle_unknown_attack/DoS-4.csv": {
+      "role": "target_attack_test",
+      "vehicle": "2011-chevrolet-traverse",
+      "source_log": "2011-chevrolet-traverse/DoS-attacks/DoS-4.log",
+      "source_labels": "2011-chevrolet-traverse/post-attack-labeled/DoS-attacks/DoS-4.csv",
+      "attack_family": "dos",
+      "verify_replay_interface_labels": false
+    },
+    "set_01/train_02_with_attacks/force-neutral-1.csv": {
+      "role": "train_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/gear-attacks/force-neutral-1.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/gear-attacks/force-neutral-1.csv",
+      "attack_family": "gear_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_01/train_02_with_attacks/rpm-1.csv": {
+      "role": "train_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/rpm-attacks/rpm-1.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/rpm-attacks/rpm-1.csv",
+      "attack_family": "rpm_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_01/train_02_with_attacks/force-neutral-2.csv": {
+      "role": "val_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/gear-attacks/force-neutral-2.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/gear-attacks/force-neutral-2.csv",
+      "attack_family": "gear_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_01/train_02_with_attacks/rpm-2.csv": {
+      "role": "val_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/rpm-attacks/rpm-2.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/rpm-attacks/rpm-2.csv",
+      "attack_family": "rpm_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_01/train_02_with_attacks/standstill-1.csv": {
+      "role": "val_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/standstill-attacks/standstill-1.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/standstill-attacks/standstill-1.csv",
+      "attack_family": "standstill",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_01/train_02_with_attacks/standstill-2.csv": {
+      "role": "train_query",
+      "vehicle": "2011-chevrolet-impala",
+      "source_log": "2011-chevrolet-impala/post-attack-unlabeled/standstill-attacks/standstill-2.log",
+      "source_labels": "2011-chevrolet-impala/post-attack-labeled/standstill-attacks/standstill-2.csv",
+      "attack_family": "standstill",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/force-neutral-3.csv": {
+      "role": "train_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/gear-attacks/force-neutral-3.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/gear-attacks/force-neutral-3.csv",
+      "attack_family": "gear_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/double-3.csv": {
+      "role": "train_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/combined-attacks/double-3.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/combined-attacks/double-3.csv",
+      "attack_family": "double_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/triple-3.csv": {
+      "role": "train_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/combined-attacks/triple-3.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/combined-attacks/triple-3.csv",
+      "attack_family": "triple_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/force-neutral-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/gear-attacks/force-neutral-4.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/gear-attacks/force-neutral-4.csv",
+      "attack_family": "gear_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/double-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/combined-attacks/double-4.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/combined-attacks/double-4.csv",
+      "attack_family": "double_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/triple-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/combined-attacks/triple-4.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/combined-attacks/triple-4.csv",
+      "attack_family": "triple_spoofing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": true
+    },
+    "set_03/train_02_with_attacks/fuzzing-4.csv": {
+      "role": "val_query",
+      "vehicle": "2016-chevrolet-silverado",
+      "source_log": "2016-chevrolet-silverado/post-attack-unlabeled/fuzzing-attacks/fuzzing-4.log",
+      "source_labels": "2016-chevrolet-silverado/post-attack-labeled/fuzzing-attacks/fuzzing-4.csv",
+      "attack_family": "random_id_fuzzing",
+      "source_log_repo": "can-ml",
+      "verify_replay_interface_labels": false
+    }
+  },
+  "clock_policy": {
+    "method": "For replay logs: prefix maximum within each verified log interface, then stable chronological merge; within-interface frame order preserved. Other inputs: global prefix maximum.",
+    "maximum_correction_seconds": 0.001,
+    "output": "Derived CSV plus original/derived row indices, replay interface and old/new timestamp for every moved/corrected row; raw lake untouched.",
+    "failure": "Reject row/interface correspondence mismatch or within-interface correction over 1 ms; never silently sort, drop or truncate frames.",
+    "rationale": "Full replay clock audit: global backsteps up to 7.895 ms arise from interleaved interfaces, while within-interface backsteps are at most 69 microseconds. Avoid shifting valid frames by several milliseconds."
+  },
+  "heldout_in_weight_training": [
+    "random_id_fuzzing"
+  ],
+  "limitations": [
+    "One dataset family and one seed; no independent incident-level attack intervals",
+    "Background-derived variants are grouped within query splits, not counted as independent acquisitions",
+    "Malformed fuzzing-3 excluded; multi-GB random-ID target caches remain outside this first multi-attack source fit",
+    "Existing target normal/DoS results are previously inspected diagnostic evidence; no fresh holdout claim",
+    "Sampled background fingerprints establish known reuse, not absence of all shared traffic; no trip/day independence is claimed."
+  ],
+  "excluded_pending_derivation_review": {
+    "reason": "Local curated variant SHA256 differs from pinned original post-attack labeled CSV; full derivation and original acquisition correspondence not established.",
+    "recordings": {
+      "set_01/train_02_with_attacks/targeted_payload_fuzzing-1.csv": {
+        "role": "train_query",
+        "vehicle": "2011-chevrolet-impala",
+        "source_log": "2011-chevrolet-impala/fuzzing-attacks/fuzzing-1.log",
+        "source_labels": "2011-chevrolet-impala/post-attack-labeled/fuzzing-attacks/fuzzing-1.csv",
+        "attack_family": "payload_fuzzing"
+      },
+      "set_01/train_02_with_attacks/targeted_payload_fuzzing-2.csv": {
+        "role": "train_query",
+        "vehicle": "2011-chevrolet-impala",
+        "source_log": "2011-chevrolet-impala/fuzzing-attacks/fuzzing-2.log",
+        "source_labels": "2011-chevrolet-impala/post-attack-labeled/fuzzing-attacks/fuzzing-2.csv",
+        "attack_family": "payload_fuzzing"
+      },
+      "set_03/train_02_with_attacks/valid_systematic-3.csv": {
+        "role": "val_query",
+        "vehicle": "2016-chevrolet-silverado",
+        "source_log": "2016-chevrolet-silverado/systematic-attacks/systematic-3.log",
+        "source_labels": "2016-chevrolet-silverado/post-attack-labeled/systematic-attacks/systematic-3.csv",
+        "attack_family": "valid_id_systematic"
+      },
+      "set_03/train_02_with_attacks/valid_systematic-4.csv": {
+        "role": "val_query",
+        "vehicle": "2016-chevrolet-silverado",
+        "source_log": "2016-chevrolet-silverado/systematic-attacks/systematic-4.log",
+        "source_labels": "2016-chevrolet-silverado/post-attack-labeled/systematic-attacks/systematic-4.csv",
+        "attack_family": "valid_id_systematic"
+      }
+    }
+  },
+  "provenance_note": "Non-DoS labeled files originate from can-ml post-attack-unlabeled replay logs, not same-named can-dataset original capture logs. Related background captures remain grouped using the global reuse inventory.",
+  "reuse_review_root": "/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-expanded-review-v1",
+  "capture_group_policy": "Union global background-reuse components regardless of replay bus. Also union overlapping original physical captures, or overlapping replays sharing a virtual CAN interface. Independent concurrent virtual buses and physical-vs-replay wall clocks do not alone establish shared acquisition; persist interface sets and clock domains in provenance.",
+  "documentation_amendment": "After upstream origin review, corrected live-capture wording to replay captures; assignments, data, family taxonomy and clock policy unchanged."
+}

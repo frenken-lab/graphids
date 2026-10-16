@@ -113,3 +113,24 @@ def test_resource_utilization_callback_is_mlflow_summary_compatibility_shim():
     assert isinstance(callback, MLflowSystemMetricsSummaryCallback)
     assert callback.sampling_interval == 5
     assert callback.include_gpu is False
+
+
+def test_phase_metrics_count_event_windows_and_individual_chunks(tmp_path, monkeypatch):
+    from graphids._mlflow import MLflowSystemMetricsCallback
+    from graphids.core.data.events.data import EventStreamWindows
+    from tests.test_event_graph_mamba import event_record
+
+    _, events = event_record(tmp_path)
+    callback = MLflowSystemMetricsCallback()
+    monkeypatch.setattr(callback, "_sample_gpu", lambda: None)
+    callback._begin_phase("train")
+    callback._batch_phase(EventStreamWindows([events], 2, 1, 8192)[0])
+    callback._end_phase()
+    assert callback.phase_summaries[-1]["scored_events"] == 6
+    assert abs(callback.phase_summaries[-1]["scored_seconds"] - 0.02) < 1e-8
+    batch = events.batch(0, 6)
+    batch.scored[:2] = False
+    callback._begin_phase("validation")
+    callback._batch_phase(batch)
+    callback._end_phase()
+    assert callback.phase_summaries[-1]["scored_events"] == 4

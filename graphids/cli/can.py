@@ -23,7 +23,7 @@ def audit(
 ):
     import json
 
-    from graphids.core.data.snapshots.manifest import audit_catalog
+    from graphids.core.data.recordings import audit_catalog
     from graphids.paths import lake_root, load_catalog
 
     raw_root = raw_root or Path(lake_root()) / "raw"
@@ -33,3 +33,14 @@ def audit(
     typer.echo(
         f"Wrote {output}; provenance review and explicit recording roles are required before fitting."
     )
+
+
+@can_app.command("verify-events")
+def verify_events(
+    config: Annotated[Path, typer.Option(help="Event experiment YAML")],
+    output: Annotated[Path, typer.Option(help="Verification JSON destination")],
+):
+    """Verify every source frame against its reviewed CSV, in a Slurm allocation."""
+    from graphids.core.data.events.verify import verify_events as verify
+    result = verify(config, output)
+    typer.echo(f"Verified {result['frames']} source frames; wrote {output}")

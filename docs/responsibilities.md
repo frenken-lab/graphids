@@ -1,68 +1,27 @@
-# Module Responsibilities
+# Module responsibilities
 
-**Experiment configs** (`configs/experiments/*.yml`) define one launchable
-unit: dataset, stage, representation, resources, and the stage-specific
-payload under `config`.
+Experiment YAML in `configs/experiments/` defines a launchable run: source data,
+model, representation, resources and `fit` or `test` stage. The typed boundary
+in `graphids/exp/config.py` expands inheritance, checks representation agreement,
+and rejects retired contracts. `graphids/primitives*.py` exports only `can_event`,
+`can_event_dm` and `event_graph_mamba` configuration primitives.
 
-**Typed config** (`graphids/exp/config.py`) validates YAML and builds a
-`RunConfig`. It owns the contract for `ExperimentConfig`, `ResourceConfig`,
-stage payloads, output paths, MLflow tags/params, and the representation drift
-check between top-level metadata and `data.source`.
+`graphids/core/data/recordings.py` owns reviewed recording/provenance validation.
+`graphids/core/data/events/` owns lossless caches, chronological independent-stream
+scheduling, eligible target totals, and source ingestion verification.
+`graphids/core/models/event_graph_mamba.py` owns continuous learned state,
+truncated backpropagation, separately normalized objectives, epoch checkpoints,
+frame-score shards, coverage checks and evaluation. Shared exact AP lives in
+`graphids/core/metrics.py`.
 
-**Primitives** (`graphids/primitives*.py`) are the public object factory
-surface for YAML specs. Data, model, loss, scaler, representation, ID
-encoding, and discovery primitives live here or are re-exported here.
+`graphids/exp/runtime.py` constructs data, models and callbacks.
+`graphids/exp/ray_backend.py` launches Ray workers and runs Lightning, journals
+run status and queues offline metrics for serialized ingestion.
+`graphids/exp/slurm.py` and `graphids/cli/exp.py` render and submit allocations.
+`graphids/core/callbacks.py` provides checkpoint hashes and resource callbacks;
+`graphids/_mlflow.py` owns tracking and system metrics.
 
-**Ray backend** (`graphids/exp/ray_backend.py`) owns driver-side launch. It
-translates GraphIDS run metadata to Ray Train configs, starts or connects to
-Ray, and reports Ray result metrics.
-
-**Ray backend** (`graphids/exp/ray_backend.py`) owns driver launch, Ray worker lifecycle,
-object construction from YAML specs, journal/offline-ingest writes, and Lightning
-`fit`/`test` execution with Ray Train.
-
-**SLURM submit** (`graphids/exp/slurm.py`, `graphids/cli/exp.py`) validates an
-experiment YAML, renders a Ray allocation sbatch script, and submits it. The
-allocation starts Ray head/workers and runs
-`python -m graphids exp launch <yaml> --address "${RAY_ADDRESS}"` after
-sourcing `scripts/slurm/_preamble.sh`.
-
-**Data sources and datamodules** (`graphids/core/data/`) own raw CAN loading,
-temporal representation selection, cache paths, metadata, and Lightning
-dataloaders. `CANBusTemporalSource` builds train/validation/test
-`TemporalData` caches, and `TemporalDataModule` serves them through PyG's
-`TemporalDataLoader`.
-
-**Preprocessing** (`graphids/core/data/preprocessing/`) turns normalized CAN
-rows into temporal event tables and PyG `TemporalData`. The live
-representation is `kind: temporal`; windowed graph materialization and graph
-budgeting are no longer part of the primary training path.
-
-**Models** (`graphids/core/models/`) own Lightning modules and metrics. The
-live model families consume temporal event batches: stateless event
-classification, stateful recurrent classification, causal event attention, and
-temporal VGAE-style event reconstruction.
-
-**Callbacks** (`graphids/core/callbacks.py`) hold graphids-specific Lightning
-policy such as `Sha256ModelCheckpoint`, tau-norm, and VRAM drift warnings.
-
-**MLflow** (`graphids/_mlflow.py`) resolves the shared tracking URI, builds the
-Lightning MLflow logger, and starts/stops MLflow system-metrics monitoring for
-Lightning-created runs.
-
-The live flow is:
-
-```text
-configs/experiments/<run>.yml
-    -> ExperimentConfig.from_yaml
-    -> ExperimentConfig.build_run
-    -> gx exp launch OR gx exp submit
-    -> graphids.exp.ray_backend.launch_run
-    -> graphids.exp.ray_backend worker loop
-    -> fit | test
-    -> MLflow + .graphids/manifest.json + .graphids/events.jsonl
-```
-
-The old `graphids/plan` row renderer, `gx run`, `gx plans submit`, and
-`graphids/orchestrate.py` row dispatcher are historical and should not be used
-for new work.
+The active flow is YAML → typed run → Ray/Slurm launch → Lightning `fit`/`test`
+→ `.graphids/` journal and score artifacts → `gx exp ingest`.
+Training uses one GPU. Snapshot reproduction lives in the verified
+`archives/snapshot-2026-10-16.tar.gz` working-tree archive.

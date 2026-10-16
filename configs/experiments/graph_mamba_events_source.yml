@@ -1,0 +1,59 @@
+# Single-A100 continuous event preset selected by bounded source throughput checks.
+experiment_name: graph_mamba_events_source_seed42
+dataset: pooled_can
+seed: 42
+stage: fit
+representation_cfg:
+  kind: can_event
+  schema_version: 1
+resources:
+  cluster: ascend
+  partition: nextgen
+  accelerator: gpu
+  cpus_per_worker: 4
+  gpus_per_worker: 1
+  gres: gpu:a100:1
+  memory_gb: 64
+  time_limit: "02:00:00"
+  account: pas1266
+config:
+  model:
+    type: event_graph_mamba
+    width: 128
+    layers: 2
+    backend: official
+    dropout: 0.1
+    # Frame BCE plus normal-only categorical byte likelihood.
+    payload_weight: 1.0
+    node_capacity: 512
+    max_graph_tokens: 1048576
+  data:
+    type: can_event_dm
+    manifest_path: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-multiattack-review-v1/can-recording-manifest-v1.json
+    datasets: [set_01, set_03]
+    cache_root: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-events-source-v1/cache
+    representation_cfg:
+      kind: can_event
+      schema_version: 1
+    chunk_events: 2048
+    stream_batch_size: 4
+    effective_batch_events: 8192
+    num_workers: 0
+    pin_memory: true
+  trainer:
+    accelerator: gpu
+    devices: 1
+    max_epochs: 10
+    precision: 32-true
+    use_distributed_sampler: false
+    num_sanity_val_steps: 2
+    log_every_n_steps: 50
+  callbacks:
+    checkpoint:
+      class_path: graphids.core.callbacks.Sha256ModelCheckpoint
+      init_args:
+        dirpath: "{run_dir}/checkpoints"
+        monitor: val/classification_frame_ap
+        mode: max
+        save_top_k: 1
+        save_last: true

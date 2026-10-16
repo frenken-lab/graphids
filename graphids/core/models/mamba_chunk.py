@@ -1,4 +1,4 @@
-"""State-carrying Mamba-1 inference using the pinned official CUDA operators."""
+"""State-carrying Mamba-1 scan using the pinned official CUDA operators."""
 
 import torch
 from torch.nn import functional as F
@@ -6,8 +6,7 @@ from torch.nn import functional as F
 _WORKSPACE_BYTES = 64 * 1024**2
 
 
-@torch.no_grad()
-def mamba_chunk(block, x, conv, state, *, official):
+def mamba_chunk(block, x, conv, state, *, official, differentiable_state=True):
     """Return outputs and both final caches without resetting incoming history.
 
     The official scan starts at zero. Linearity of the SSM recurrence lets us add
@@ -15,11 +14,21 @@ def mamba_chunk(block, x, conv, state, *, official):
     The correction is tiled to bound temporary [streams, channels, time, state].
     """
     if not official:
+        projected, z = block.in_proj(x).chunk(2, -1)
+        history = torch.cat((conv, projected.transpose(1, 2)), -1)
+        convolved = F.silu(
+            F.conv1d(
+                history[:, :, -(x.shape[1] + block.d_conv - 1) :],
+                block.conv1d.weight,
+                block.conv1d.bias,
+                groups=block.d_inner,
+            )
+        ).transpose(1, 2)
         outputs = []
         for ti in range(x.shape[1]):
-            y, conv, state = block.step(x[:, ti : ti + 1], conv, state)
+            y, state = block._update(convolved[:, ti], z[:, ti], state)
             outputs.append(y)
-        return torch.cat(outputs, 1), conv, state
+        return torch.stack(outputs, 1), history[:, :, -block.d_conv :], state
     from causal_conv1d import causal_conv1d_fn
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
@@ -34,6 +43,7 @@ def mamba_chunk(block, x, conv, state, *, official):
                 conv[i : i + max_streams],
                 state[i : i + max_streams],
                 official=True,
+                differentiable_state=differentiable_state,
             )
             for i in range(0, streams, max_streams)
         ]
@@ -69,6 +79,9 @@ def mamba_chunk(block, x, conv, state, *, official):
         dt.float() + block.dt_proj.bias.float()[None, :, None]
     ).cumsum(-1)
     tile = max(1, _WORKSPACE_BYTES // (3 * streams * inner * size * 4))
+    corrections = []
+    final_parts = []
+    delta = F.softplus(dt.float() + block.dt_proj.bias.float()[None, :, None])
     for lo in range(0, length, tile):
         hi = min(length, lo + tile)
         decay = torch.exp(cumulative[:, :, lo:hi, None] * A[None, :, None, :])
@@ -77,7 +90,21 @@ def mamba_chunk(block, x, conv, state, *, official):
             * state.float()[:, :, None, :]
             * C[:, None, :, lo:hi].transpose(-1, -2).float()
         ).sum(-1)
-        y[:, :, lo:hi] += correction.to(y.dtype)
+        corrections.append(correction.to(y.dtype))
+        # The official operator intentionally omits gradients for last_state.
+        # Reconstruct it functionally when differentiable outgoing state is needed.
+        if torch.is_grad_enabled() and differentiable_state:
+            end_decay = torch.exp(
+                (cumulative[:, :, -1:] - cumulative[:, :, lo:hi])[:, :, :, None]
+                * A[None, :, None, :]
+            )
+            updates = (delta[:, :, lo:hi] * u[:, :, lo:hi].float())[:, :, :, None]
+            final_parts.append(
+                (end_decay * updates * B[:, None, :, lo:hi].transpose(-1, -2)).sum(2)
+            )
+    y = y + torch.cat(corrections, -1)
+    if final_parts:
+        final_state = torch.stack(final_parts).sum(0)
     final_state = (
         final_state + torch.exp(cumulative[:, :, -1, None] * A[None]) * state.float()
     )

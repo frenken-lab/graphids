@@ -117,28 +117,23 @@ class MLflowSystemMetricsCallback(pl.Callback):
             "started_at": datetime.now(UTC).isoformat(),
             "start_clock": time.monotonic(),
             "scored_events": 0,
-            "scored_bins": 0,
             "scored_seconds": 0.0,
             "gpu_samples": [],
-            "node_bin_capacity": 0,
-            "live_node_bins": 0,
-            "graph_message_slots": 0,
         }
         self._sample_gpu()
 
     def _batch_phase(self, batch: Any) -> None:
         if self._phase is None:
             return
-        mask = getattr(batch, "scored", None)
-        if mask is not None:
-            self._phase["scored_bins"] += int(mask.sum().item())
-            self._phase["scored_events"] += int((batch.event_count * mask).sum().item())
-            self._phase["scored_seconds"] += float((batch.exposure * mask).sum().item())
-            self._phase["node_bin_capacity"] += batch.live.numel()
-            self._phase["live_node_bins"] += int(batch.live.sum().item())
-            self._phase["graph_message_slots"] += (
-                int(batch.edge_mask.sum().item()) * batch.x.shape[1]
-            )
+        groups = getattr(batch, "groups", [[batch]])
+        for group in groups:
+            for chunk in group:
+                mask = getattr(chunk, "scored", None)
+                if mask is not None:
+                    self._phase["scored_events"] += int(mask.sum().item())
+                    self._phase["scored_seconds"] += float(
+                        chunk.times[:, 1][mask].sum().item()
+                    )
         self._sample_gpu()
 
     def _end_phase(self) -> None:
@@ -155,15 +150,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
             "wall_seconds": elapsed,
             "scored_events": phase["scored_events"],
             "events_per_second": phase["scored_events"] / elapsed if elapsed else None,
-            "scored_bins": phase["scored_bins"],
             "scored_seconds": phase["scored_seconds"],
-            "bins_per_second": phase["scored_bins"] / elapsed if elapsed else None,
-            "node_bin_occupancy": (
-                phase["live_node_bins"] / phase["node_bin_capacity"]
-                if phase["node_bin_capacity"]
-                else None
-            ),
-            "graph_message_slots": phase["graph_message_slots"],
             "gpu_sample_count": len(samples),
             "gpu_utilization_mean": sum(s[0] for s in samples) / len(samples)
             if samples
@@ -184,11 +171,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
                         "wall_seconds",
                         "scored_events",
                         "events_per_second",
-                        "scored_bins",
                         "scored_seconds",
-                        "bins_per_second",
-                        "node_bin_occupancy",
-                        "graph_message_slots",
                         "gpu_sample_count",
                         "gpu_utilization_mean",
                         "gpu_utilization_max",

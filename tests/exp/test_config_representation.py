@@ -2,11 +2,11 @@ from graphids.core.data.preprocessing.representations import representation_kind
 from graphids.exp.config import ExperimentConfig
 
 
-def test_defaults_to_snapshot_representation():
+def test_defaults_to_event_representation():
     cfg = ExperimentConfig(experiment_name="demo", dataset="toy")
     run = cfg.build_run(name="demo-run", stage="fit")
-    assert representation_kind(cfg.representation_cfg) == "can_snapshot"
-    assert representation_kind(run.representation_cfg) == "can_snapshot"
+    assert representation_kind(cfg.representation_cfg) == "can_event"
+    assert representation_kind(run.representation_cfg) == "can_event"
     assert run.mlflow_tags()["graphids.phase"] == "fit"
 
 

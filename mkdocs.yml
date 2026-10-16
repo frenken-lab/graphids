@@ -113,7 +113,10 @@ plugins:
 nav:
   - Home: index.md
   - Architecture:
-      - Graph Mamba: reference/graph-mamba.md
+      - Snapshot archive: reference/snapshot-archive.md
+      - Retired snapshot architecture: reference/graph-mamba.md
+      - Missed attack diagnostics: reference/missed-attack-diagnostics.md
+      - Message-preserving graph-Mamba: reference/graph-mamba-events.md
       - Module responsibilities: responsibilities.md
       - Config system: reference/config-architecture.md
       - Data architecture: reference/data-architecture.md

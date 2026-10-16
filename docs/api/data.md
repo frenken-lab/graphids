@@ -1,17 +1,11 @@
-# CAN snapshots and recording manifests
+# CAN events and recording manifests
 
-Versioned recording manifests assign disjoint source and target roles, explicit
-label/normality provenance, and content hashes. Snapshot caches preserve causal
-features, empty bins and partial-bin exposure. Immutable vehicle context stores
-reference profiles and bounded graph topology. Stream batching and distributed
-schedules preserve recording-local state and expose scored work.
+Reviewed manifests retain explicit roles, hashes, clock units and provenance.
+The event data module preserves every row and batches independent chronological
+streams. See [event architecture](../reference/graph-mamba-events.md).
 
-See [training and evaluation](../reference/graph-mamba.md).
+::: graphids.core.data.recordings
 
-::: graphids.core.data.snapshots.manifest
-
-::: graphids.core.data.snapshots.datamodule
-
-::: graphids.core.data.snapshots.online
+::: graphids.core.data.events.data
 
 ::: graphids.primitives_data

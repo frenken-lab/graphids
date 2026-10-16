@@ -144,7 +144,7 @@ def _build_lightning_run(
         trainer = prepare_trainer(trainer)
 
     if stage == "fit":
-        trainer.fit(model, datamodule=data)
+        trainer.fit(model, datamodule=data, ckpt_path=cfg.get("ckpt_path") or None)
         metrics = _scalar_metrics(trainer.callback_metrics)
         if logger is not None and metrics:
             logger.log_metrics(metrics, step=trainer.global_step)
@@ -185,7 +185,7 @@ def _worker_loop(config: dict[str, Any]) -> None:
         run.write_config()
 
     if run.stage in {"fit", "test"} and run.resources.accelerator == "gpu":
-        if run.payload.model.get("type") == "vehicle_graph_mamba_joint":
+        if run.payload.model.get("type") == "event_graph_mamba":
             from graphids.runtime_checks import assert_mamba_backend
 
             if run.payload.model.get("backend", "official") == "official":

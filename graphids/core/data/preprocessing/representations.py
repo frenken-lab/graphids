@@ -1,12 +1,20 @@
-"""Versioned causal CAN snapshot representation identity."""
+"""Versioned causal CAN event representation identity."""
 
 import hashlib
 import json
 from dataclasses import asdict
 
-from graphids.core.data.snapshots.preprocessing import CANSnapshotRepresentationCfg
+from pydantic import TypeAdapter
 
-RepresentationCfg = CANSnapshotRepresentationCfg
+from graphids.core.data.events.representation import CANEventRepresentationCfg
+
+RepresentationCfg = CANEventRepresentationCfg
+
+
+def parse_representation(value):
+    if isinstance(value, dict) and value.get("kind") == "can_snapshot":
+        raise ValueError("can_snapshot retired; restore archives/snapshot-2026-10-16.tar.gz; use can_event")
+    return TypeAdapter(RepresentationCfg).validate_python(value)
 
 
 def representation_kind(cfg: RepresentationCfg) -> str:

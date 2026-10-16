@@ -1,5 +1,0 @@
-extends: graph_mamba_ctat_pilot.yml
-experiment_name: graph_mamba_ctat_pilot_test
-stage: test
-config:
-  ckpt_path: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-real-pilot-v1/joint.ckpt

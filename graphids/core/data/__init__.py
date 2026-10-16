@@ -1,14 +1,5 @@
-"""CAN recording contracts and lazy snapshot training interfaces."""
+"""Reviewed CAN recording contracts."""
+from .events.representation import CANEventRepresentationCfg
+from .recordings import CANRecordingManifest, Recording
 
-from .snapshots.manifest import CANRecordingManifest, Recording
-from .snapshots.preprocessing import CANSnapshotRepresentationCfg
-
-__all__ = ["CANRecordingManifest", "Recording", "CANSnapshotRepresentationCfg"]
-
-
-def __getattr__(name):
-    if name == "CANSnapshotDataModule":
-        from .snapshots.datamodule import CANSnapshotDataModule
-
-        return CANSnapshotDataModule
-    raise AttributeError(name)
+__all__ = ["CANRecordingManifest", "Recording", "CANEventRepresentationCfg"]

@@ -98,7 +98,7 @@ def test_build_lightning_run_attaches_logger(monkeypatch):
             self.callback_metrics = {}
             self.global_step = 0
 
-        def fit(self, model, datamodule):
+        def fit(self, model, datamodule, ckpt_path=None):
             captured["fit_model"] = model
             captured["fit_datamodule"] = datamodule
 
@@ -165,9 +165,9 @@ def test_manifest_and_events_round_trip(tmp_path):
         git_sha="abc123",
         payload=FitRunPayload(
             model={
-                "class_path": "graphids.primitives_models.VehicleGraphMambaJointCfg"
+                "class_path": "graphids.primitives_models.EventGraphMambaCfg"
             },
-            data={"class_path": "graphids.primitives_data.CANSnapshotDMCfg"},
+            data={"class_path": "graphids.primitives_data.CANEventDMCfg"},
         ),
         resources=ResourceConfig(),
         outputs=OutputConfig(run_dir=str(run_dir)),
