@@ -101,8 +101,28 @@ def materialize_events(rec: Recording, root: Path):
     return destination
 
 
+class _TensorFields:
+    """Copy dataclasses while transforming their tensors and prepared routing."""
+
+    def _map_tensors(self, transform):
+        return replace(
+            self,
+            **{
+                name: transform(value)
+                for name, value in vars(self).items()
+                if isinstance(value, torch.Tensor | EventRouting)
+            },
+        )
+
+    def to(self, device, **kwargs):
+        return self._map_tensors(lambda value: value.to(device, **kwargs))
+
+    def pin_memory(self):
+        return self._map_tensors(lambda value: value.pin_memory())
+
+
 @dataclass
-class EventRouting:
+class EventRouting(_TensorFields):
     recording: str
     source_digest: str
     row_start: int
@@ -112,26 +132,6 @@ class EventRouting:
     previous: torch.Tensor
     own: torch.Tensor
     final: torch.Tensor
-
-    def to(self, device, **kwargs):
-        return replace(
-            self,
-            **{
-                k: v.to(device, **kwargs)
-                for k, v in vars(self).items()
-                if isinstance(v, torch.Tensor)
-            },
-        )
-
-    def pin_memory(self):
-        return replace(
-            self,
-            **{
-                k: v.pin_memory()
-                for k, v in vars(self).items()
-                if isinstance(v, torch.Tensor)
-            },
-        )
 
 
 def prepare_routing(recording, digest, start, event_ids, incoming_ids):
@@ -164,7 +164,7 @@ def prepare_routing(recording, digest, start, event_ids, incoming_ids):
 
 
 @dataclass
-class CANEventBatch:
+class CANEventBatch(_TensorFields):
     recording: str
     source_digest: str
     row_start: int
@@ -184,28 +184,6 @@ class CANEventBatch:
     recording_end: bool = False
     routing: EventRouting | None = None
     host_timestamps: tuple[float, ...] = ()
-
-    def to(self, device, **kwargs):
-        return replace(
-            self,
-            routing=self.routing.to(device, **kwargs) if self.routing else None,
-            **{
-                name: value.to(device, **kwargs)
-                for name, value in vars(self).items()
-                if isinstance(value, torch.Tensor)
-            },
-        )
-
-    def pin_memory(self):
-        return replace(
-            self,
-            routing=self.routing.pin_memory() if self.routing else None,
-            **{
-                name: value.pin_memory()
-                for name, value in vars(self).items()
-                if isinstance(value, torch.Tensor)
-            },
-        )
 
     def slice(self, start, stop):
         if not 0 <= start < stop <= len(self.ids):
@@ -527,32 +505,28 @@ class CANEventDataModule(pl.LightningDataModule):
         records = [
             r for r in self.event_recordings.values() if r.recording.role == role
         ]
-        loader = EventTrainingLoader if training else DataLoader
-        options = (
-            {
-                "cuda_prefetch": self.cuda_prefetch
-                and (
-                    self.trainer is None
-                    or self.trainer.strategy.root_device.type == "cuda"
-                )
-            }
-            if training
-            else {}
-        )
+        options = {}
+        if training:
+            loader = EventTrainingLoader
+            dataset = EventStreamWindows(
+                records,
+                self.chunk_events,
+                self.stream_batch_size,
+                self.effective_batch_events,
+            )
+            options["cuda_prefetch"] = self.cuda_prefetch and (
+                self.trainer is None or self.trainer.strategy.root_device.type == "cuda"
+            )
+        else:
+            loader = DataLoader
+            dataset = EventChunks(records, self.chunk_events)
         if self.num_workers:
             options.update(
                 prefetch_factor=self.prefetch_factor,
                 persistent_workers=self.persistent_workers,
             )
         return loader(
-            EventStreamWindows(
-                records,
-                self.chunk_events,
-                self.stream_batch_size,
-                self.effective_batch_events,
-            )
-            if training
-            else EventChunks(records, self.chunk_events),
+            dataset,
             **options,
             batch_size=None,
             shuffle=False,

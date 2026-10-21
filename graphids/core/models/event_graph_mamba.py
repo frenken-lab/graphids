@@ -7,7 +7,6 @@ count/change correlation edges. This is a separate, incompatible checkpoint type
 
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -19,7 +18,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from graphids import event_defaults as defaults
-from graphids.core.metrics import raw_average_precision
+from graphids.core.evaluation import EventScores
 
 from .mamba_chunk import mamba_chunk
 
@@ -111,8 +110,7 @@ class EventGraphMamba(pl.LightningModule):
         self._training_states = {}
         self._epoch_complete = True
         self._stream_state = None
-        self._score_parts = []
-        self._score_index = []
+        self._scores = None
         self._source_manifest_digest = None
 
     def prepare_from_datamodule(self, dm):
@@ -143,48 +141,43 @@ class EventGraphMamba(pl.LightningModule):
         ), header
 
     def _routing(self, batch, state):
-        prepared = batch.routing
-        if prepared is not None:
-            if (
-                prepared.recording,
-                prepared.source_digest,
-                prepared.row_start,
-                prepared.event_ids,
-                prepared.incoming_ids,
-            ) != (
-                batch.recording,
-                batch.source_digest,
-                batch.row_start,
-                batch.routing_ids,
-                state.ids,
-            ):
-                raise ValueError("prepared routing provenance/history mismatch")
-            if len(prepared.ids) > self.hparams.node_capacity:
-                raise ValueError(
-                    "event node capacity exceeded; no IDs were silently evicted"
-                )
-            if len(prepared.ids) * len(batch.ids) > self.hparams.max_graph_tokens:
-                raise ValueError(
-                    "event graph capacity exceeded; use smaller event chunks"
-                )
-            return prepared.ids, prepared.previous, prepared.own, prepared.final
-        # Check capacity before the shared CPU helper allocates dense indices.
         from graphids.core.data.events.data import prepare_routing
 
-        ids = tuple(dict.fromkeys((*state.ids, *batch.routing_ids)))
+        route = batch.routing
+        if route is not None and (
+            route.recording,
+            route.source_digest,
+            route.row_start,
+            route.event_ids,
+            route.incoming_ids,
+        ) != (
+            batch.recording,
+            batch.source_digest,
+            batch.row_start,
+            batch.routing_ids,
+            state.ids,
+        ):
+            raise ValueError("prepared routing provenance/history mismatch")
+        ids = (
+            route.ids
+            if route is not None
+            else tuple(dict.fromkeys((*state.ids, *batch.routing_ids)))
+        )
+        # Guard capacity before the CPU helper allocates dense routing indices.
         if len(ids) > self.hparams.node_capacity:
             raise ValueError(
                 "event node capacity exceeded; no IDs were silently evicted"
             )
         if len(ids) * len(batch.ids) > self.hparams.max_graph_tokens:
             raise ValueError("event graph capacity exceeded; use smaller event chunks")
-        route = prepare_routing(
-            batch.recording,
-            batch.source_digest,
-            batch.row_start,
-            batch.routing_ids,
-            state.ids,
-        )
+        if route is None:
+            route = prepare_routing(
+                batch.recording,
+                batch.source_digest,
+                batch.row_start,
+                batch.routing_ids,
+                state.ids,
+            )
         return route.ids, route.previous, route.own, route.final
 
     @staticmethod
@@ -512,7 +505,7 @@ class EventGraphMamba(pl.LightningModule):
         self._epoch_complete = True
 
     def _start_scores(self):
-        self._stream_state, self._score_parts, self._score_index = None, [], []
+        self._stream_state, self._scores = None, None
 
     def on_validation_epoch_start(self):
         self._start_scores()
@@ -528,6 +521,14 @@ class EventGraphMamba(pl.LightningModule):
         self.log_dict(
             {f"{prefix}/{k}": v for k, v in parts.items()}, batch_size=len(batch.ids)
         )
+        if self.trainer.sanity_checking or not self.trainer.is_global_zero:
+            return
+        if self._scores is None:
+            self._scores = EventScores(
+                Path(self.trainer.default_root_dir)
+                / "artifacts"
+                / f"{prefix}-events-epoch{self.current_epoch:04d}"
+            )
         mask = torch.arange(8, device=batch.ids.device)[None] < batch.lengths[:, None]
         mask &= batch.payload_length_verified
         nll = F.cross_entropy(
@@ -552,33 +553,12 @@ class EventGraphMamba(pl.LightningModule):
             .cpu()
             .numpy()
         )
-        # Bounded artifacts, one shard per input chunk. No million-object score list.
-        if self.trainer.is_global_zero and not self.trainer.sanity_checking:
-            directory = (
-                Path(self.trainer.default_root_dir)
-                / "artifacts"
-                / f"{prefix}-events-epoch{self.current_epoch:04d}"
-            )
-            directory.mkdir(parents=True, exist_ok=True)
-            name = f"{len(self._score_index):08d}.npz"
-            np.savez(
-                directory / name,
-                values=values,
-                row_start=batch.row_start,
-                recording=batch.recording,
-                source_digest=batch.source_digest,
-            )
-        self._score_index.append(
-            dict(
-                recording=batch.recording,
-                row_start=batch.row_start,
-                count=len(batch.ids),
-            )
+        self._scores.write(
+            values,
+            recording=batch.recording,
+            source_digest=batch.source_digest,
+            row_start=batch.row_start,
         )
-        # Only labels and scalar scores for exact source AP; no node states retained.
-        if self.trainer.sanity_checking:
-            return
-        self._score_parts.append(str(directory / name))
 
     def validation_step(self, batch, batch_idx):
         self._evaluate(batch, "val")
@@ -587,80 +567,16 @@ class EventGraphMamba(pl.LightningModule):
         self._evaluate(batch, "test")
 
     def _finish_scores(self, prefix):
-        if not self._score_parts:
+        if self._scores is None:
             return
-        import tempfile
-
-        total = sum(c["count"] for c in self._score_index)
-        with tempfile.NamedTemporaryFile(dir=self.trainer.default_root_dir) as backing:
-            values = np.memmap(
-                backing.name, mode="w+", dtype=np.float64, shape=(total, 4)
-            )
-            offset = 0
-            for path in self._score_parts:
-                with np.load(path) as shard:
-                    block = shard["values"][:, 2:]
-                    values[offset : offset + len(block)] = block
-                    offset += len(block)
-            values.flush()
-        # The open mapping remains valid after unlink on POSIX; metrics retain
-        # scalar columns only, never node histories or per-chunk score arrays.
-        labels = values[:, 0]
-        known = labels >= 0
-        metrics = {}
-        for head, column in (("classification", 1), ("payload", 2)):
-            eligible = (
-                known if head == "classification" else known & values[:, 3].astype(bool)
-            )
-            ap = raw_average_precision(values[eligible, column], labels[eligible])
-            if ap is not None:
-                metrics[f"{head}_frame_ap"] = ap
-                self.log(f"{prefix}/{head}_frame_ap", ap)
-        expected = {}
-        for chunk in self._score_index:
-            key = chunk["recording"]
-            if chunk["row_start"] != expected.get(key, 0):
-                raise ValueError("duplicate/missing event evaluation rows")
-            expected[key] = chunk["row_start"] + chunk["count"]
-        if not self.trainer.sanity_checking:
-            dm = self.trainer.datamodule
-            counts = {
-                k: r.count
-                for k, r in dm.event_recordings.items()
-                if r.recording.role == "val_query"
-            }
-            if expected != counts:
-                raise ValueError(
-                    "incomplete event evaluation; every validation frame is required"
-                )
-            directory = (
-                Path(self.trainer.default_root_dir)
-                / "artifacts"
-                / f"{prefix}-events-epoch{self.current_epoch:04d}"
-            )
-            (directory / "index.json").write_text(
-                json.dumps(
-                    dict(
-                        schema_version=1,
-                        prediction_unit="observed_frame",
-                        metrics=metrics,
-                        coverage=expected,
-                        columns=[
-                            "timestamp",
-                            "can_id",
-                            "label",
-                            "classification",
-                            "payload_nll",
-                            "payload_supported",
-                        ],
-                        chunks=self._score_index,
-                        calibration="unfitted; classification threshold 0.5 is diagnostic only",
-                    ),
-                    indent=2,
-                )
-                + "\n"
-            )
-        self._score_parts = []
+        expected = {
+            key: recording.count
+            for key, recording in self.trainer.datamodule.event_recordings.items()
+            if recording.recording.role == "val_query"
+        }
+        for name, value in self._scores.finish(expected).items():
+            self.log(f"{prefix}/{name}", value)
+        self._scores = None
 
     def on_validation_epoch_end(self):
         self._finish_scores("val")

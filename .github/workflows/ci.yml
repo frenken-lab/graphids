@@ -18,23 +18,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install ruff
       - run: ruff check graphids/ tests/
 
-  # test:
-  #   runs-on: ubuntu-latest
-  #   # Disabled: test file list is actively changing during refactor.
-  #   # Re-enable once test suite stabilizes.
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: "3.12"
-  #     - name: Install dependencies
-  #       run: |
-  #         pip install torch --index-url https://download.pytorch.org/whl/cpu
-  #         pip install torch-geometric
-  #         pip install -e ".[dev]" --no-deps
-  #     - name: Run tests
-  #       run: pytest tests/ -v -m "not slurm and not slow"
+  artifact-tests:
+    runs-on: ubuntu-latest
+    env:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pytest
+      - name: Check frame artifacts and exact metrics
+        run: python -m pytest -q tests/core/test_evaluation.py tests/core/test_metrics.py

@@ -5,13 +5,16 @@ from __future__ import annotations
 import os
 
 import pytest
-import torch
 
 # Synthetic CPU cases are slower when PyTorch starts a large thread pool.
-torch.set_num_threads(1)
+# Set limits before test modules import torch; NumPy-only tests need no torch.
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
     if os.environ.get("SLURM_JOB_ID"):
         return
     skip = pytest.mark.skip(reason="requires SLURM allocation (SLURM_JOB_ID unset)")

@@ -23,6 +23,29 @@ def state_close(a, b):
             torch.testing.assert_close(x, y, rtol=4e-4, atol=4e-5)
 
 
+@pytest.mark.parametrize("prepared", [False, True])
+def test_batch_transfer_preserves_metadata_without_mutating_source(tmp_path, prepared):
+    """Copying a batch must also copy routing tensors used by later streams."""
+    _, events = event_record(tmp_path)
+    batch = events.batch(0, events.count)
+    if not prepared:
+        batch = replace(batch, routing=None)
+    moved = batch.to("cpu", copy=True)
+    assert (moved.recording, moved.routing_ids, moved.host_timestamps) == (
+        batch.recording,
+        batch.routing_ids,
+        batch.host_timestamps,
+    )
+    moved.payload[0, 0] = 255
+    assert int(batch.payload[0, 0]) == 0
+    if prepared:
+        torch.testing.assert_close(moved.routing.previous, batch.routing.previous)
+        moved.routing.previous[0, 0] = 999
+        assert int(batch.routing.previous[0, 0]) == -1
+    else:
+        assert moved.routing is None
+
+
 @pytest.mark.parametrize("backend", ["reference", "official"])
 def test_differentiable_scan_incoming_state_and_truncated_gradients(tmp_path, backend):
     if backend == "official" and not torch.cuda.is_available():
@@ -390,16 +413,6 @@ def test_event_verification_cli_backend_publishes_complete_and_failed_reports(tm
     with pytest.raises(AssertionError):
         verify_events(config, report)
     assert json.loads(report.read_text())["status"] == "incomplete"
-
-
-def test_exact_frame_ap_preserves_raw_score_ties_and_unknown_labels():
-    from graphids.core.metrics import raw_average_precision
-
-    assert raw_average_precision([2.0, 2.0, 1.0, 20.0], [1, 0, 1, -1]) == pytest.approx(
-        (0.5 + 2 / 3) / 2
-    )
-    assert raw_average_precision([1.0, 1.0], [0, 1]) == 0.5
-    assert raw_average_precision([1.0, 2.0], [0, -1]) is None
 
 
 @pytest.mark.parametrize(

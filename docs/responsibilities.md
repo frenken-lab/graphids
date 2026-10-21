@@ -11,8 +11,9 @@ and rejects retired contracts. `graphids/primitives*.py` exports only `can_event
 scheduling, eligible target totals, and source ingestion verification.
 `graphids/core/models/event_graph_mamba.py` owns continuous learned state,
 truncated backpropagation, separately normalized objectives, epoch checkpoints,
-frame-score shards, coverage checks and evaluation. Shared exact AP lives in
-`graphids/core/metrics.py`.
+and Lightning evaluation hooks. `graphids/core/evaluation.py` owns frame-score
+shards, recording coverage checks and the evaluation index; it uses only NumPy
+and the standard library. Shared exact AP lives in `graphids/core/metrics.py`.
 
 `graphids/exp/runtime.py` constructs data, models and callbacks.
 `graphids/exp/ray_backend.py` launches Ray workers and runs Lightning, journals

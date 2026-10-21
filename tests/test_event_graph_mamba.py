@@ -19,6 +19,7 @@ from graphids.core.data.recordings import (
     iter_rows,
     read_rows,
 )
+from graphids.core.metrics import raw_average_precision
 from graphids.core.models.event_graph_mamba import EventGraphMamba
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.runtime import build_component
@@ -284,6 +285,24 @@ def test_lightning_fit_evaluation_coverage_and_checkpoint_round_trip(tmp_path):
     )
     assert index["coverage"] == {"validation": 6}
     assert sum(c["count"] for c in index["chunks"]) == 6
+    # CONTRACT: Lightning publishes the same exact AP as the saved frame scores.
+    shards = sorted((tmp_path / "run/artifacts/val-events-epoch0000").glob("*.npz"))
+    blocks = []
+    for path in shards:
+        with np.load(path) as shard:
+            blocks.append(shard["values"])
+    values = np.concatenate(blocks)
+    for head, column in (("classification", 3), ("payload", 4)):
+        selected = (
+            np.ones(len(values), dtype=bool)
+            if head == "classification"
+            else values[:, 5].astype(bool)
+        )
+        expected = raw_average_precision(values[selected, column], values[selected, 2])
+        assert index["metrics"][f"{head}_frame_ap"] == expected
+        assert float(trainer.callback_metrics[f"val/{head}_frame_ap"]) == pytest.approx(
+            expected
+        )
     assert (
         np.load(tmp_path / "run/artifacts/val-events-epoch0000/00000000.npz")[
             "row_start"

@@ -159,6 +159,16 @@ with physical row offsets and source identities, plus an index recording exact
 coverage and frame-level AP. Incomplete validation is rejected. Thresholds and
 snapshot calibration are not silently transferred to the new model.
 
+`graphids.core.evaluation.EventScores` owns shard writing, coverage checks and
+exact epoch AP independently of the model and Lightning. The model supplies
+the six score columns and logs the returned metrics. The existing NPZ/JSON
+artifact format and checkpoint parameter names are preserved. Direct artifact
+and metric tests live in `tests/core/test_evaluation.py` and
+`tests/core/test_metrics.py`; end-to-end coverage and checkpoint tests remain
+in `tests/test_event_graph_mamba.py`.
+The CI `artifact-tests` job runs these direct tests with only NumPy and pytest;
+model, training and CUDA checks still run through the Slurm gate.
+
 Implementation verification on 2026-10-16 checked all **21,285,666 query frames
 across 21 source recordings**, with every cached field matching its CSV row.
 CPU regression job `56288831` passed 49 tests (two GPU-only cases skipped).

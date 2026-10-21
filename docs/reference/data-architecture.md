@@ -18,9 +18,11 @@ and replaces finished streams without padding, replay or dropped scored rows.
 `EventTrainingWindow` declares complete classification and normal-payload target
 totals for one optimizer update. The model detaches history between chunks.
 
-Evaluation writes one bounded frame-score shard per chronological chunk and
-verifies exact recording coverage. Epoch AP consumes scalar columns via a disk
-mapping; node histories and score blocks are not retained by the model.
+`graphids.core.evaluation.EventScores` writes one bounded frame-score shard per
+chronological chunk and verifies exact recording coverage before publishing the
+index. Epoch AP consumes scalar columns via a disk mapping; node histories and
+score blocks are not retained by the model. This artifact component has no torch
+or Lightning dependency.
 
 See [model and training contract](graph-mamba-events.md) and the
 [retired snapshot archive](graph-mamba.md). The experiment CLI, Ray, Lightning
