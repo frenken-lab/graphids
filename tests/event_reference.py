@@ -146,12 +146,13 @@ def serial_scan(model, batches, states=None, *, detach=False):
     return outputs, following
 
 
-def serial_loss_sums(output, batch):
+def serial_loss_sums(output, batch, *, positive_weight=1.0):
     known = batch.scored & (batch.labels >= 0)
     classification = F.binary_cross_entropy_with_logits(
         output["classification_logits"],
         batch.labels.clamp_min(0).float(),
         reduction="none",
+        pos_weight=output["classification_logits"].new_tensor(positive_weight),
     )
     valid = (
         (torch.arange(8, device=batch.ids.device)[None] < batch.lengths[:, None])
@@ -168,7 +169,9 @@ def serial_loss_sums(output, batch):
 
 
 def serial_loss(model, output, batch):
-    c, nc, p, npayload = serial_loss_sums(output, batch)
+    c, nc, p, npayload = serial_loss_sums(
+        output, batch, positive_weight=model.hparams.positive_weight
+    )
     return c / nc.clamp_min(1) + model.hparams.payload_weight * p / npayload.clamp_min(
         1
     )

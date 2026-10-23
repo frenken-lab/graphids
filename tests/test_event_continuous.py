@@ -14,6 +14,110 @@ from tests.test_event_graph_mamba import event_record, model
 pytestmark = pytest.mark.slurm
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_positive_weight_preserves_unknown_and_unscored_masks(tmp_path, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    _, events = event_record(tmp_path)
+    batch = events.batch(0, events.count).to(device)
+    batch.labels[0] = -1
+    batch.scored[2] = False
+    logits = torch.zeros(events.count, device=device, requires_grad=True)
+    output = {
+        "classification_logits": logits,
+        "payload_logits": torch.zeros(
+            events.count, 8, 256, device=device, requires_grad=True
+        ),
+    }
+    cls, count, _, _ = model(positive_weight=6).to(device).loss_sums(output, batch)
+    assert count == 4
+    torch.testing.assert_close(
+        cls, logits.new_tensor(9.0) * logits.new_tensor(2.0).log()
+    )
+    cls.backward()
+    torch.testing.assert_close(
+        logits.grad, logits.new_tensor([0.0, -3.0, 0.0, 0.5, 0.5, 0.5])
+    )
+
+
+@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize("positive_weight", [1.0, 6.0])
+def test_epoch_losses_use_all_targets_including_earlier_normal_recordings(
+    tmp_path, backend, positive_weight
+):
+    import json
+
+    import lightning.pytorch as pl
+
+    from tests.test_event_graph_mamba import source_dm
+
+    if backend == "official" and not torch.cuda.is_available():
+        pytest.skip("official CUDA required")
+    device = "cuda" if backend == "official" else "cpu"
+    dm = source_dm(tmp_path)
+    attack, events = event_record(tmp_path, key="last-attack")
+    dm.event_recordings[attack.key] = events
+    dm.records[attack.key] = attack
+    net = model(backend, learning_rate=0, positive_weight=positive_weight).to(device)
+    net.prepare_from_datamodule(dm)
+    totals = torch.zeros(4, device=device)
+    with torch.no_grad():
+        for recording in dm.event_recordings.values():
+            if recording.recording.role != "train_query":
+                continue
+            state = None
+            for start in range(0, recording.count, dm.chunk_events):
+                batch = recording.batch(
+                    start, min(start + dm.chunk_events, recording.count)
+                ).to(device)
+                outputs, state = net.scan([batch], state, detach=True)
+                totals += torch.stack(
+                    serial_loss_sums(outputs[0], batch, positive_weight=positive_weight)
+                )
+
+    class Reporter(pl.Callback):
+        def on_train_epoch_end(self, trainer, pl_module):
+            # Ray reports from this callback, before the module's epoch-end hook.
+            assert trainer.callback_metrics["train/classification_targets"] == totals[1]
+            assert trainer.callback_metrics["train/payload_targets"] == totals[3]
+
+    trainer = pl.Trainer(
+        accelerator="gpu" if backend == "official" else "cpu",
+        devices=1,
+        max_epochs=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        num_sanity_val_steps=0,
+        default_root_dir=tmp_path / "run",
+        callbacks=[Reporter()],
+    )
+    trainer.fit(net, datamodule=dm)
+    metrics = trainer.callback_metrics
+    assert metrics["train/classification_targets"] == totals[1]
+    assert metrics["train/payload_targets"] == totals[3]
+    torch.testing.assert_close(
+        metrics["train/classification"].float().cpu(), (totals[0] / totals[1]).cpu()
+    )
+    torch.testing.assert_close(
+        metrics["train/payload"].float().cpu(), (totals[2] / totals[3]).cpu()
+    )
+    index = json.loads(
+        (tmp_path / "run/artifacts/val-events-epoch0000/index.json").read_text()
+    )
+    assert "validation" in index["by_recording"]
+    checkpoint = {}
+    net.on_save_checkpoint(checkpoint)
+    checkpoint["event_input_contract"]["model_config"].pop("positive_weight")
+    if positive_weight == 1:
+        net.on_load_checkpoint(checkpoint)  # Legacy unweighted checkpoint still loads.
+    else:
+        with pytest.raises(ValueError, match="model configuration differs"):
+            net.on_load_checkpoint(checkpoint)
+    with pytest.raises(ValueError, match="model configuration differs"):
+        model(positive_weight=2).on_load_checkpoint(checkpoint)
+
+
 def state_close(a, b):
     assert (a.next_row, a.ids) == (b.next_row, b.ids)
     torch.testing.assert_close(a.nodes, b.nodes, rtol=4e-4, atol=4e-5)

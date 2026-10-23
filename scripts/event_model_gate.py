@@ -250,7 +250,9 @@ def benchmark(
         )
 
         def objective(output, batch):
-            c, _, p, _ = serial_loss_sums(output, batch)
+            c, _, p, _ = serial_loss_sums(
+                output, batch, positive_weight=model.hparams.positive_weight
+            )
             return c / max(1, nc) + model.hparams.payload_weight * p / max(1, npayload)
 
         c, _, p, _ = model.batched_loss_sums(outputs, current)

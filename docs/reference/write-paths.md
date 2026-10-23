@@ -57,6 +57,31 @@ $GRAPHIDS_RUN_ROOT/{dataset}/{experiment_name}/{run_name}/
 Checkpoint files exist only when the experiment config enables checkpointing
 and includes a checkpoint callback.
 
+Event validation writes exactly two persistent files per completed epoch under
+`artifacts/val-events-epochNNNN/`: `scores.bin` and `index.json`. The packed file
+contains all six frame-score columns as little-endian FP64 rows. The schema-2
+index stores shape/dtype, per-chunk file offsets, recording/source identity,
+coverage, aggregate metrics and per-recording metrics. Input chunk size does not
+change the persistent file count. Metric scratch mappings use local `TMPDIR`.
+
+Read either legacy NPZ shards or packed artifacts with
+`graphids.core.evaluation.iter_score_chunks`. To consolidate a complete legacy
+epoch without changing its scores or metrics:
+
+```bash
+python scripts/pack_event_scores.py /path/to/val-events-epoch0000 --remove-shards
+```
+
+Migration verifies the packed data's SHA256 and recording/row coverage before
+publishing the new index and removing the old shards. Incomplete epochs without
+an index are not migrated. Score artifact schema changes do not alter model
+checkpoint identity or the raw-message input contract.
+
+October 23 cleanup archived obsolete run directories and logs outside ESS after
+content comparisons, while retaining current inputs/caches, baseline results and
+checkpoints. Inventories, archive paths, checksums and the final file-count audit
+are under `/users/PAS2022/rf15/graphids-cleanup-audits/20261023T182040Z/`.
+
 ## Cache Paths
 
 Graph caches are versioned by `graphids.paths.PREPROCESSING_VERSION`.

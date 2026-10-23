@@ -51,6 +51,7 @@ class EventGraphMamba(pl.LightningModule):
         learning_rate=1e-3,
         weight_decay=0.01,
         payload_weight=1.0,
+        positive_weight=1.0,
         node_capacity=512,
         max_graph_tokens=defaults.MAX_GRAPH_TOKENS,
         schema_version=1,
@@ -67,8 +68,10 @@ class EventGraphMamba(pl.LightningModule):
             not 0 <= dropout < 1
             or not math.isfinite(payload_weight)
             or payload_weight < 0
+            or not math.isfinite(positive_weight)
+            or positive_weight <= 0
         ):
-            raise ValueError("invalid event dropout/payload loss weight")
+            raise ValueError("invalid event dropout or loss weight")
         self.save_hyperparameters()
         # Exact frame fields encoded numerically: bytes, byte-presence masks,
         # all 29 ID bits, byte length, elapsed time, preceding interarrival time.
@@ -403,7 +406,10 @@ class EventGraphMamba(pl.LightningModule):
         known = scored & (labels >= 0)
         cls = (
             F.binary_cross_entropy_with_logits(
-                logits, labels.clamp_min(0).float(), reduction="none"
+                logits,
+                labels.clamp_min(0).float(),
+                reduction="none",
+                pos_weight=logits.new_tensor(self.hparams.positive_weight),
             )
             * known
         ).sum()
@@ -450,6 +456,9 @@ class EventGraphMamba(pl.LightningModule):
             )
         self._training_states = {}
         self._training_coverage = {}
+        self._training_totals = next(self.parameters()).new_zeros(
+            4, dtype=torch.float64
+        )
         self._epoch_complete = False
 
     def training_step(self, window, batch_idx):
@@ -471,7 +480,8 @@ class EventGraphMamba(pl.LightningModule):
                     self._training_states.pop(batch.recording, None)
                 else:
                     self._training_states[batch.recording] = state
-            cls, _, payload, _ = self.batched_loss_sums(outputs, batches)
+            cls, nc, payload, npayload = self.batched_loss_sums(outputs, batches)
+            self._training_totals += torch.stack((cls, nc, payload, npayload)).detach()
             cls = cls / max(1, window.classification_targets)
             payload = payload / max(1, window.payload_targets)
             cls_total += cls.detach()
@@ -481,10 +491,6 @@ class EventGraphMamba(pl.LightningModule):
             optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
         )
         optimizer.step()
-        self.log_dict(
-            {"train/classification": cls_total, "train/payload": payload_total},
-            batch_size=sum(len(b.ids) for g in window.groups for b in g),
-        )
         expected = {
             k: r.count
             for k, r in self.trainer.datamodule.event_recordings.items()
@@ -495,6 +501,20 @@ class EventGraphMamba(pl.LightningModule):
             and self._training_coverage == expected
             and not self._training_states
         )
+        # Publish before epoch-end callbacks (including Ray's report/checkpoint).
+        if self._epoch_complete:
+            cls, nc, payload, npayload = self._training_totals
+            self.log_dict(
+                {
+                    "train/classification": cls / nc.clamp_min(1),
+                    "train/payload": payload / npayload.clamp_min(1),
+                    "train/classification_targets": nc,
+                    "train/payload_targets": npayload,
+                },
+                on_step=False,
+                on_epoch=True,
+                batch_size=1,
+            )
         return cls_total + self.hparams.payload_weight * payload_total
 
     def on_train_epoch_end(self):
@@ -575,7 +595,7 @@ class EventGraphMamba(pl.LightningModule):
             if recording.recording.role == "val_query"
         }
         for name, value in self._scores.finish(expected).items():
-            self.log(f"{prefix}/{name}", value)
+            self.log(f"{prefix}/{name}", float("nan") if value is None else value)
         self._scores = None
 
     def on_validation_epoch_end(self):
@@ -649,7 +669,9 @@ class EventGraphMamba(pl.LightningModule):
             raise ValueError(
                 "mid-epoch/legacy resume unsupported; use an epoch-boundary event checkpoint"
             )
-        if contract.get("model_config") != dict(self.hparams):
+        saved_config = dict(contract.get("model_config", {}))
+        saved_config.setdefault("positive_weight", 1.0)
+        if saved_config != dict(self.hparams):
             raise ValueError("checkpoint model configuration differs")
         self._resume_contract = contract
         self._resume_rng = checkpoint.get("event_rng_state")

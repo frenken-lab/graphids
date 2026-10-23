@@ -23,6 +23,7 @@ class EventGraphMambaCfg(_Cfg):
     learning_rate: float = Field(default=0.001, gt=0)
     weight_decay: float = Field(default=0.01, ge=0)
     payload_weight: float = Field(default=1.0, ge=0, allow_inf_nan=False)
+    positive_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     node_capacity: int = Field(default=512, ge=1)
     max_graph_tokens: int = Field(default=defaults.MAX_GRAPH_TOKENS, ge=1)
     schema_version: Literal[1] = 1

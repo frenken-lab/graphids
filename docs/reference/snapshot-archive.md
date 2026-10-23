@@ -8,6 +8,13 @@ Secrets, generated sites, build outputs, Git internals, datasets and run artifac
 are excluded. Existing lake datasets, reviewed manifests, clock repairs,
 checkpoints, calibration, and results remain in their original locations.
 
+October 23 maintenance subsequently consolidated retained event predictions and
+archived obsolete run directories and logs. Cleanup inventories, archive paths
+and checksums are recorded under
+`/users/PAS2022/rf15/graphids-cleanup-audits/20261023T182040Z/`.
+Reviewed inputs, the active event cache, the October 16 event baseline and the
+current comparison suite remain in place. The source archive above is unchanged.
+
 To reproduce snapshot experiments, extract into a separate directory:
 
 ```bash

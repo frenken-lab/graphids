@@ -154,15 +154,22 @@ gx can verify-events --config configs/experiments/graph_mamba_events_source.yml 
 ```
 
 This rereads every selected source query row and checks every cache field against
-it, persisting per-record progress and hashes. A failed audit raises and marks the report incomplete. Model evaluation writes one bounded NPZ shard per chunk,
-with physical row offsets and source identities, plus an index recording exact
-coverage and frame-level AP. Incomplete validation is rejected. Thresholds and
+it, persisting per-record progress and hashes. A failed audit raises and marks the report incomplete. Model evaluation appends bounded chunks to one `scores.bin`
+per epoch, plus `index.json` recording physical row offsets, source identities,
+exact coverage and frame-level metrics. Incomplete validation is rejected. Thresholds and
 snapshot calibration are not silently transferred to the new model.
 
-`graphids.core.evaluation.EventScores` owns shard writing, coverage checks and
+`graphids.core.evaluation.EventScores` owns packed score writing, coverage checks and
 exact epoch AP independently of the model and Lightning. The model supplies
-the six score columns and logs the returned metrics. The existing NPZ/JSON
-artifact format and checkpoint parameter names are preserved. Direct artifact
+the six score columns and logs the returned metrics. Artifact schema 2 stores
+little-endian FP64 values in row-major order, with shape/dtype and chunk offsets
+in the index; the six score columns and checkpoint identities are unchanged.
+`iter_score_chunks` reads complete schema-1 NPZ epochs and schema-2 packed epochs.
+Metric scratch space uses local `TMPDIR` rather than the persistent lake.
+`scripts/pack_event_scores.py EPOCH --remove-shards` migrates a complete legacy
+epoch: it verifies source metadata, exact coverage and the packed-file SHA256
+before replacing the index and removing the old shards. Existing metrics are
+preserved exactly. Direct artifact
 and metric tests live in `tests/core/test_evaluation.py` and
 `tests/core/test_metrics.py`; end-to-end coverage and checkpoint tests remain
 in `tests/test_event_graph_mamba.py`.

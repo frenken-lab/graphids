@@ -286,11 +286,14 @@ def test_lightning_fit_evaluation_coverage_and_checkpoint_round_trip(tmp_path):
     assert index["coverage"] == {"validation": 6}
     assert sum(c["count"] for c in index["chunks"]) == 6
     # CONTRACT: Lightning publishes the same exact AP as the saved frame scores.
-    shards = sorted((tmp_path / "run/artifacts/val-events-epoch0000").glob("*.npz"))
-    blocks = []
-    for path in shards:
-        with np.load(path) as shard:
-            blocks.append(shard["values"])
+    from graphids.core.evaluation import iter_score_chunks
+
+    blocks = [
+        values
+        for _, values in iter_score_chunks(
+            tmp_path / "run/artifacts/val-events-epoch0000"
+        )
+    ]
     values = np.concatenate(blocks)
     for head, column in (("classification", 3), ("payload", 4)):
         selected = (
@@ -303,12 +306,8 @@ def test_lightning_fit_evaluation_coverage_and_checkpoint_round_trip(tmp_path):
         assert float(trainer.callback_metrics[f"val/{head}_frame_ap"]) == pytest.approx(
             expected
         )
-    assert (
-        np.load(tmp_path / "run/artifacts/val-events-epoch0000/00000000.npz")[
-            "row_start"
-        ]
-        == 0
-    )
+    assert index["chunks"][0]["row_start"] == 0
+    assert index["storage"]["shape"] == [6, 6]
     checkpoint = tmp_path / "events.ckpt"
     trainer.save_checkpoint(checkpoint)
     loaded = EventGraphMamba.load_from_checkpoint(checkpoint)
