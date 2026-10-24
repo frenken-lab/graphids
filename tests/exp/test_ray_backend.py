@@ -111,11 +111,13 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     ],
 )
 def test_build_lightning_run_wires_components_compile_logger_and_ray(
-    monkeypatch, ray_enabled, stage, with_logger
+    monkeypatch, tmp_path, ray_enabled, stage, with_logger
 ):
     """Pairwise coverage of stage, logger, and Ray preserves runtime wiring."""
     import sys
     import types
+
+    from lightning.pytorch.callbacks import ModelCheckpoint
 
     from graphids._mlflow import MLflowSystemMetricsCallback
     from graphids.exp import ray_backend, runtime
@@ -146,6 +148,7 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
             captured["run"] = ("test", model, datamodule, ckpt_path)
 
     data, model = DummyData(), DummyModel()
+    checkpoint = ModelCheckpoint(dirpath=tmp_path) if stage == "fit" else None
     logger = (
         types.SimpleNamespace(
             log_metrics=lambda metrics, step: captured.update(logged=(metrics, step))
@@ -153,14 +156,14 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
         if with_logger
         else None
     )
+    components = {"dummy_data": data, "dummy_model": model, "checkpoint": checkpoint}
     monkeypatch.setattr(
-        runtime,
-        "build_component",
-        lambda spec: data if spec["type"] == "dummy_data" else model,
+        runtime, "build_component", lambda spec: components[spec["type"]]
     )
     lightning = types.ModuleType("lightning")
     pytorch = types.ModuleType("lightning.pytorch")
     pytorch.Trainer = DummyTrainer
+    pytorch.callbacks = types.SimpleNamespace(ModelCheckpoint=ModelCheckpoint)
     pytorch.seed_everything = lambda seed, workers: captured.update(
         seed=seed, workers=workers
     )
@@ -200,6 +203,7 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
             "data": {"type": "dummy_data"},
             "model": {"type": "dummy_model"},
             "trainer": {"max_epochs": 1},
+            "callbacks": {"checkpoint": {"type": "checkpoint"}} if checkpoint else {},
             "seed_everything": 7,
             "ckpt_path": "resume.ckpt",
             "compile": {"backend": "eager", "fullgraph": False},
@@ -227,6 +231,7 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
         is with_logger
     )
     if ray_enabled:
+        assert kwargs["enable_checkpointing"] is (checkpoint is not None)
         assert kwargs["accelerator"] == kwargs["devices"] == "auto"
         assert isinstance(kwargs["strategy"], FakeRayDDPStrategy)
         assert any(

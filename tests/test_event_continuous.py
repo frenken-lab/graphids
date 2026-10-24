@@ -142,7 +142,6 @@ def test_epoch_losses_use_all_targets_including_earlier_normal_recordings(
     dm = source_dm(tmp_path)
     attack, events = event_record(tmp_path, key="last-attack")
     dm.event_recordings[attack.key] = events
-    dm.records[attack.key] = attack
     net = model(backend, learning_rate=0, positive_weight=positive_weight).to(device)
     net.prepare_from_datamodule(dm)
     totals = torch.zeros(4, device=device)

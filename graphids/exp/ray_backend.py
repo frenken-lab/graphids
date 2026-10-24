@@ -113,7 +113,10 @@ def _build_lightning_run(
         plugins.append(RayLightningEnvironment())
         trainer_kwargs["plugins"] = plugins
         callbacks.append(RayTrainReportCallback())
-        trainer_kwargs.setdefault("enable_checkpointing", False)
+        trainer_kwargs.setdefault(
+            "enable_checkpointing",
+            any(isinstance(cb, pl.callbacks.ModelCheckpoint) for cb in callbacks),
+        )
     trainer_kwargs["callbacks"] = callbacks
 
     trainer = pl.Trainer(**trainer_kwargs)

@@ -10,6 +10,10 @@ Current stages:
   instantiation, Ray Lightning strategy/environment, and Ray checkpoint/metric
   reporting.
 
+Ray normally uses its report callback for checkpointing. Supplying a Lightning
+`ModelCheckpoint` callback also enables Lightning checkpointing by default; an
+explicit `trainer.enable_checkpointing` setting takes precedence.
+
 ## `graphids.exp.ray_backend`
 
 ::: graphids.exp.ray_backend

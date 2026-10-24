@@ -135,7 +135,6 @@ class EventGraphMamba(pl.LightningModule):
                 "event checkpoint source manifest differs from current data"
             )
         self._source_manifest_digest = digest
-        self._recordings = dm.records
 
     def fields(self, batch):
         bits = (
@@ -198,73 +197,57 @@ class EventGraphMamba(pl.LightningModule):
             *index.shape, bank.shape[-1]
         )
 
-    def _readout_batched(self, h, header, batches, states, routes):
-        """Pack banks with disjoint offsets; tile attention under 256 MiB."""
+    def _readout_batched(self, h, header, states, routes):
+        """Project packed banks once; attend within each stream under 256 MiB."""
         width = h.shape[-1]
-        banks, previous, own, final, offsets = [], [], [], [], []
-        offset = 0
-        max_ids = max(len(r[0]) for r in routes)
-        for i, (state, route) in enumerate(zip(states, routes, strict=True)):
-            ids, prev, local_own, local_final = route
-            past = state.nodes if state.nodes is not None else h.new_empty((0, width))
-            bank = torch.cat((past, h[i]), 0)
-            banks.append(bank)
-            offsets.append(offset)
-            prev = torch.as_tensor(prev, device=h.device)
-            # Sentinel -1 remains invalid after packing and padding.
-            prev = torch.where(prev >= 0, prev + offset, -1)
-            previous.append(F.pad(prev, (0, max_ids - len(ids)), value=-1))
-            local_own = torch.as_tensor(local_own, device=h.device)
-            own.append(torch.where(local_own >= 0, local_own + offset, -1))
-            final.append(torch.as_tensor(local_final, device=h.device) + offset)
-            offset += len(bank)
-        bank = torch.cat(banks)
-        # Split once before tile gathers. Autograd combines these local bank
-        # gradients once; gathering from the full packed bank in every tile
-        # otherwise zeros a streams-times-larger gradient buffer for each tile.
-        bank_lengths = [len(b) for b in banks]
-        keys = self.key(bank).split(bank_lengths)
-        values = self.value(bank).split(bank_lengths)
-        queries = self.query(h).flatten(0, 1)
-        index = torch.stack(previous).flatten(0, 1)
-        # Two gathered banks plus attention/backward workspace per tile.
-        tile = max(
-            1, _GRAPH_WORKSPACE_BYTES // (4 * max_ids * width * h.element_size())
-        )
-
-        def gather_tile(parts, lo, hi):
-            pieces = []
-            length = h.shape[1]
-            for stream in range(lo // length, (hi - 1) // length + 1):
-                start, stop = max(lo, stream * length), min(hi, (stream + 1) * length)
-                local = index[start:stop] - offsets[stream]
-                pieces.append(self._gather_rows(parts[stream], local.clamp_min(0)))
-            return pieces[0] if len(pieces) == 1 else torch.cat(pieces)
-
-        aggregates = []
-        for lo in range(0, len(queries), tile):
-            ix = index[lo : lo + tile]
-            mask = ix >= 0
-            hi = min(len(queries), lo + tile)
-            k = gather_tile(keys, lo, hi)
-            logits = torch.bmm(k, queries[lo : lo + tile, :, None]).squeeze(-1)
-            logits = logits / math.sqrt(width)
-            weights = logits.masked_fill(~mask, torch.finfo(logits.dtype).min).softmax(
-                -1
+        banks = [
+            torch.cat(
+                (s.nodes if s.nodes is not None else h.new_empty((0, width)), current)
             )
-            # Entirely empty history produces exactly zero aggregate.
-            weights = weights * mask
-            v = gather_tile(values, lo, hi)
-            aggregates.append(torch.bmm(weights[:, None], v).squeeze(1))
-        aggregate = torch.cat(aggregates).reshape_as(h)
+            for s, current in zip(states, h, strict=True)
+        ]
+        bank = torch.cat(banks)
+        lengths = [len(b) for b in banks]
+        # Each tile gathers from its own bank. Its backward therefore zeros only
+        # that stream's gradient buffer, while projections remain batched.
+        keys, values = self.key(bank).split(lengths), self.value(bank).split(lengths)
+        aggregates, previous_ids, nodes = [], [], []
+        for query, key, value, history, route in zip(
+            self.query(h), keys, values, banks, routes, strict=True
+        ):
+            ids, previous, own, final = route
+            previous, own, final = (
+                torch.as_tensor(index, device=h.device)
+                for index in (previous, own, final)
+            )
+            # Two gathered banks plus attention/backward workspace per tile.
+            tile = max(
+                1, _GRAPH_WORKSPACE_BYTES // (4 * len(ids) * width * h.element_size())
+            )
+            tiles = []
+            for lo in range(0, len(query), tile):
+                index = previous[lo : lo + tile]
+                mask = index >= 0
+                index = index.clamp_min(0)
+                k = self._gather_rows(key, index)
+                logits = torch.bmm(k, query[lo : lo + tile, :, None]).squeeze(-1)
+                logits = logits / math.sqrt(width)
+                weights = logits.masked_fill(
+                    ~mask, torch.finfo(logits.dtype).min
+                ).softmax(-1)
+                # Entirely empty history produces exactly zero aggregate.
+                weights = weights * mask
+                v = self._gather_rows(value, index)
+                tiles.append(torch.bmm(weights[:, None], v).squeeze(1))
+            aggregates.append(torch.cat(tiles))
+            previous_ids.append(
+                self._gather_rows(history, own.clamp_min(0)) * (own >= 0)[:, None]
+            )
+            nodes.append(self._gather_rows(history, final))
+        aggregate = torch.stack(aggregates)
         z = self.graph_norm(
             h
             + torch.sigmoid(self.graph_gate(torch.cat((h, aggregate), -1))) * aggregate
-        )
-        own_index = torch.stack(own)
-        previous_id = (
-            self._gather_rows(bank, own_index.clamp_min(0))
-            * (own_index >= 0)[..., None]
         )
         preceding = torch.stack(
             [
@@ -273,14 +256,15 @@ class EventGraphMamba(pl.LightningModule):
             ]
         )
         previous_bus = torch.cat((preceding[:, None], h[:, :-1]), 1)
-        payload = self.payload_head(torch.cat((previous_bus, previous_id, header), -1))
+        payload = self.payload_head(
+            torch.cat((previous_bus, torch.stack(previous_ids), header), -1)
+        )
         payload = payload.reshape(*h.shape[:2], 8, 256)
         classification = self.classifier(z).squeeze(-1)
         outputs = [
             dict(classification_logits=classification[i], payload_logits=payload[i])
-            for i in range(len(batches))
+            for i in range(len(states))
         ]
-        nodes = [self._gather_rows(bank, ix) for ix in final]
         return outputs, nodes
 
     def forward(self, batch):
@@ -367,9 +351,7 @@ class EventGraphMamba(pl.LightningModule):
             )
             caches.append((conv, memory))
             h = h + self.dropout(out)
-        outputs, nodes_by_stream = self._readout_batched(
-            h, header, batches, states, routes
-        )
+        outputs, nodes_by_stream = self._readout_batched(h, header, states, routes)
         following = []
         for i, batch in enumerate(batches):
             ids, nodes = routes[i][0], nodes_by_stream[i]

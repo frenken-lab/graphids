@@ -62,9 +62,10 @@ ID-history provenance. Each cache retains only compact first-appearance metadata
 dense routing exists only for scheduled chunks. Host timestamp metadata avoids
 GPU scalar reads during continuity checks. An independent serial graph/routing/loss oracle lives in test support; the
 unused `scan(reference=...)` argument has been removed. Model
-execution packs disjoint recording banks, batches projections and heads, and
-uses tiled matrix products for attention. Unknown/future ID slots receive zero
-attention mass, including frames with entirely empty history.
+execution batches projections and heads across recording banks, then attends
+within each stream using local history indices and bounded matrix-product tiles.
+Unknown/future ID slots receive zero attention mass, including frames with
+entirely empty history.
 
 `num_workers` (default 2) controls CPU preparation; pinned memory defaults to true. Explicitly select zero workers for synchronous CPU diagnostics. `prefetch_factor` (default 2) and
 `persistent_workers` (default true) apply only with workers enabled. Workers

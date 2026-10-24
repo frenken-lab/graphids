@@ -498,7 +498,6 @@ class CANEventDataModule(pl.LightningDataModule):
         if not recordings:
             raise ValueError("no reviewed source query recordings selected")
         self.event_recordings = recordings
-        self.records = {r.key: r for r in self.manifest.records}
         self.test_data = {"source": None}
 
     def _loader(self, role, *, training=False):
