@@ -7,9 +7,8 @@
 - Normal runs use `{run_root}/{dataset}/{experiment_name}/{run_name}`.
 - `$GRAPHIDS_SLURM_LOG_DIR` holds allocation scripts and stdout/stderr.
 
-Temporal cache identity includes preprocessing version, representation,
-vocabulary, training-source mode, and split policy. Do not change cache keys or
-split manifests during structural refactors.
+Event cache identity includes the recording metadata and source digest. Preserve
+cache keys, reviewed manifests, and physical recording order during refactors.
 
 Workers write `.graphids/manifest.json`, `.graphids/events.jsonl`, and offline
 `.graphids/mlflow_ingest.json`. `gx exp ingest` serializes MLflow writes after

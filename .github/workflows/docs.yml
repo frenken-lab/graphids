@@ -8,14 +8,7 @@ on:
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
-      - "graphids/config/**"
-      - "graphids/orchestrate/**"
-      - "graphids/core/callbacks.py"
-      - "graphids/_mlflow.py"
-      - "graphids/core/data/vocab.py"
-      - "graphids/core/data/sampler.py"
-      - "graphids/core/data/budget.py"
-      - "graphids/slurm/**"
+      - "graphids/**"
   pull_request:
     branches: [main]
     paths:
@@ -23,14 +16,7 @@ on:
       - "mkdocs.yml"
       - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
-      - "graphids/config/**"
-      - "graphids/orchestrate/**"
-      - "graphids/core/callbacks.py"
-      - "graphids/_mlflow.py"
-      - "graphids/core/data/vocab.py"
-      - "graphids/core/data/sampler.py"
-      - "graphids/core/data/budget.py"
-      - "graphids/slurm/**"
+      - "graphids/**"
 
 permissions:
   contents: read

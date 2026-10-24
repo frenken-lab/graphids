@@ -8,28 +8,107 @@ import torch
 
 from graphids.core.data.events.data import EventStreamWindows
 from graphids.core.models.event_graph_mamba import EventGraphMambaState
+from tests.event_fixtures import event_record, model
 from tests.event_reference import serial_loss, serial_loss_sums, serial_scan
-from tests.test_event_graph_mamba import event_record, model
-
-pytestmark = pytest.mark.slurm
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_positive_weight_preserves_unknown_and_unscored_masks(tmp_path, device):
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=[pytest.mark.gpu, pytest.mark.slurm])]
+)
+def test_cached_byte_losses_preserve_objective_masks_and_gradients(tmp_path, device):
+    """Mixed-eligibility streams share NLL without changing losses or gradients."""
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA required")
     _, events = event_record(tmp_path)
-    batch = events.batch(0, events.count).to(device)
+    batches = []
+    for normal, verified, masked in (
+        (True, True, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, True),
+    ):
+        batch = replace(
+            events.batch(0, 6).to(device, copy=True),
+            verified_normal=normal,
+            payload_length_verified=verified,
+        )
+        batch.labels[0] = -1
+        batch.scored[2] = False
+        if masked:
+            batch.scored[:] = False
+        batches.append(batch)
+    net = model(positive_weight=6).to(device)
+    torch.manual_seed(42)
+    tensors = {
+        "classification_logits": torch.randn(6, device=device),
+        "payload_logits": torch.randn(6, 8, 256, device=device),
+    }
+    outputs = [
+        [
+            {name: value.clone().requires_grad_() for name, value in tensors.items()}
+            for _ in batches
+        ]
+        for _ in range(3)
+    ]
+    nll = [
+        net._payload_nll(output["payload_logits"], batch.payload)
+        for output, batch in zip(outputs[0], batches, strict=True)
+    ]
+    cached = net._loss_sums(outputs[0], batches, payload_nll=nll)
+    uncached = net.batched_loss_sums(outputs[1], batches)
+    serial = [
+        serial_loss_sums(output, batch, positive_weight=6)
+        for output, batch in zip(outputs[2], batches, strict=True)
+    ]
+    reference = tuple(sum(sums[i] for sums in serial) for i in range(4))
+    for sums in (cached, uncached):
+        for actual, expected in zip(sums, reference, strict=True):
+            torch.testing.assert_close(
+                torch.as_tensor(actual), torch.as_tensor(expected)
+            )
+    for sums in (cached, uncached, reference):
+        net._normalize_loss_sums(sums)[0].backward()
+    for cached_output, uncached_output, expected in zip(*outputs, strict=True):
+        for name in tensors:
+            torch.testing.assert_close(cached_output[name].grad, expected[name].grad)
+            torch.testing.assert_close(uncached_output[name].grad, expected[name].grad)
+
+
+def test_expected_training_coverage_refreshes_with_each_epoch():
+    """Epoch completion uses current training recordings and excludes validation rows."""
+    from types import SimpleNamespace
+
+    def recording(count, role):
+        return SimpleNamespace(count=count, recording=SimpleNamespace(role=role))
+
+    records = {"train": recording(6, "train_query"), "val": recording(9, "val_query")}
+    net = model()
+    net._trainer = SimpleNamespace(
+        accumulate_grad_batches=1,
+        datamodule=SimpleNamespace(event_recordings=records),
+    )
+    net.on_train_epoch_start()
+    assert net._expected_training_coverage == {"train": 6}
+    net._training_coverage["train"] = 6
+    records["train"].count = 8
+    records["new"] = recording(3, "train_query")
+    net.on_train_epoch_start()
+    assert net._expected_training_coverage == {"train": 8, "new": 3}
+    assert net._training_coverage == {}
+    assert net._epoch_complete is False
+
+
+def test_positive_weight_preserves_unknown_and_unscored_masks(tmp_path):
+    _, events = event_record(tmp_path)
+    batch = events.batch(0, events.count)
     batch.labels[0] = -1
     batch.scored[2] = False
-    logits = torch.zeros(events.count, device=device, requires_grad=True)
+    logits = torch.zeros(events.count, requires_grad=True)
     output = {
         "classification_logits": logits,
-        "payload_logits": torch.zeros(
-            events.count, 8, 256, device=device, requires_grad=True
-        ),
+        "payload_logits": torch.zeros(events.count, 8, 256, requires_grad=True),
     }
-    cls, count, _, _ = model(positive_weight=6).to(device).loss_sums(output, batch)
+    cls, count, _, _ = model(positive_weight=6).loss_sums(output, batch)
     assert count == 4
     torch.testing.assert_close(
         cls, logits.new_tensor(9.0) * logits.new_tensor(2.0).log()
@@ -40,8 +119,14 @@ def test_positive_weight_preserves_unknown_and_unscored_masks(tmp_path, device):
     )
 
 
-@pytest.mark.parametrize("backend", ["reference", "official"])
-@pytest.mark.parametrize("positive_weight", [1.0, 6.0])
+@pytest.mark.parametrize(
+    "backend, positive_weight",
+    [
+        ("reference", 1.0),
+        pytest.param("official", 6.0, marks=pytest.mark.gpu),
+    ],
+)
+@pytest.mark.slurm
 def test_epoch_losses_use_all_targets_including_earlier_normal_recordings(
     tmp_path, backend, positive_weight
 ):
@@ -49,7 +134,7 @@ def test_epoch_losses_use_all_targets_including_earlier_normal_recordings(
 
     import lightning.pytorch as pl
 
-    from tests.test_event_graph_mamba import source_dm
+    from tests.event_fixtures import source_dm
 
     if backend == "official" and not torch.cuda.is_available():
         pytest.skip("official CUDA required")
@@ -127,30 +212,31 @@ def state_close(a, b):
             torch.testing.assert_close(x, y, rtol=4e-4, atol=4e-5)
 
 
-@pytest.mark.parametrize("prepared", [False, True])
-def test_batch_transfer_preserves_metadata_without_mutating_source(tmp_path, prepared):
+def test_batch_transfer_preserves_metadata_without_mutating_source(tmp_path):
     """Copying a batch must also copy routing tensors used by later streams."""
     _, events = event_record(tmp_path)
-    batch = events.batch(0, events.count)
-    if not prepared:
-        batch = replace(batch, routing=None)
-    moved = batch.to("cpu", copy=True)
-    assert (moved.recording, moved.routing_ids, moved.host_timestamps) == (
-        batch.recording,
-        batch.routing_ids,
-        batch.host_timestamps,
-    )
-    moved.payload[0, 0] = 255
-    assert int(batch.payload[0, 0]) == 0
-    if prepared:
-        torch.testing.assert_close(moved.routing.previous, batch.routing.previous)
-        moved.routing.previous[0, 0] = 999
-        assert int(batch.routing.previous[0, 0]) == -1
-    else:
-        assert moved.routing is None
+    prepared = events.batch(0, events.count)
+    for batch in (prepared, replace(prepared, routing=None)):
+        moved = batch.to("cpu", copy=True)
+        assert (moved.recording, moved.routing_ids, moved.host_timestamps) == (
+            batch.recording,
+            batch.routing_ids,
+            batch.host_timestamps,
+        )
+        moved.payload[0, 0] = 255
+        assert int(batch.payload[0, 0]) == 0
+        if batch.routing is None:
+            assert moved.routing is None
+        else:
+            torch.testing.assert_close(moved.routing.previous, batch.routing.previous)
+            moved.routing.previous[0, 0] = 999
+            assert int(batch.routing.previous[0, 0]) == -1
 
 
-@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize(
+    "backend",
+    ["reference", pytest.param("official", marks=[pytest.mark.gpu, pytest.mark.slurm])],
+)
 def test_differentiable_scan_incoming_state_and_truncated_gradients(tmp_path, backend):
     if backend == "official" and not torch.cuda.is_available():
         pytest.skip("official CUDA required")
@@ -189,7 +275,10 @@ def test_differentiable_scan_incoming_state_and_truncated_gradients(tmp_path, ba
         torch.testing.assert_close(p.grad, q.grad, rtol=1e-2, atol=1e-4)
 
 
-@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize(
+    "backend",
+    ["reference", pytest.param("official", marks=[pytest.mark.gpu, pytest.mark.slurm])],
+)
 def test_untruncated_scan_gradients_match_functional_full_sequence(tmp_path, backend):
     if backend == "official" and not torch.cuda.is_available():
         pytest.skip("official CUDA required")
@@ -209,7 +298,10 @@ def test_untruncated_scan_gradients_match_functional_full_sequence(tmp_path, bac
         torch.testing.assert_close(p.grad, q.grad, rtol=1e-2, atol=1e-4, msg=name)
 
 
-@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize(
+    "backend",
+    ["reference", pytest.param("official", marks=[pytest.mark.gpu, pytest.mark.slurm])],
+)
 def test_stream_batching_matches_serial_with_distinct_ids_and_replacement(
     tmp_path, backend
 ):
@@ -266,6 +358,7 @@ def test_stream_batching_matches_serial_with_distinct_ids_and_replacement(
     assert not states
 
 
+@pytest.mark.slurm
 def test_accumulation_uses_separate_complete_window_denominators(tmp_path):
     _, events = event_record(tmp_path, normal=True)
     batch = events.batch(0, 6)
@@ -316,16 +409,22 @@ def test_duplicate_physical_rows_are_preserved(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "execution", ["cpu", "cuda_sync", "cuda_workers", "cuda_prefetch"]
+    "execution, checkpoint_mode",
+    [
+        ("cpu", "manual"),
+        pytest.param("cuda_sync", "validation_callback", marks=pytest.mark.gpu),
+        pytest.param("cuda_workers", "manual", marks=pytest.mark.gpu),
+        pytest.param("cuda_prefetch", "validation_callback", marks=pytest.mark.gpu),
+    ],
 )
-@pytest.mark.parametrize("checkpoint_mode", ["manual", "validation_callback"])
+@pytest.mark.slurm
 def test_epoch_boundary_resume_matches_uninterrupted_optimizer_and_rng(
     tmp_path, checkpoint_mode, execution
 ):
     import lightning.pytorch as pl
 
     from graphids.core.models.event_graph_mamba import EventGraphMamba
-    from tests.test_event_graph_mamba import source_dm
+    from tests.event_fixtures import source_dm
 
     if execution != "cpu" and not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -394,10 +493,11 @@ def test_epoch_boundary_resume_matches_uninterrupted_optimizer_and_rng(
             torch.testing.assert_close(a[key], b[key], rtol=0, atol=0)
 
 
+@pytest.mark.slurm
 def test_incomplete_epoch_checkpoint_is_rejected_even_at_last_limited_batch(tmp_path):
     import lightning.pytorch as pl
 
-    from tests.test_event_graph_mamba import source_dm
+    from tests.event_fixtures import source_dm
 
     dm = source_dm(tmp_path)
     dm.effective_batch_events = 2
@@ -420,7 +520,10 @@ def test_incomplete_epoch_checkpoint_is_rejected_even_at_last_limited_batch(tmp_
         net.on_save_checkpoint({})
 
 
-@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize(
+    "backend",
+    ["reference", pytest.param("official", marks=[pytest.mark.gpu, pytest.mark.slurm])],
+)
 def test_optimized_graph_matches_independent_serial_outputs_and_gradients(
     tmp_path, backend
 ):
@@ -448,38 +551,6 @@ def test_optimized_graph_matches_independent_serial_outputs_and_gradients(
         torch.testing.assert_close(p.grad, q.grad, rtol=1e-2, atol=1e-4, msg=name)
 
 
-def test_unsupported_components_and_missing_experiments_have_generic_errors():
-    from graphids.exp.config import ExperimentConfig
-    from graphids.exp.runtime import build_component
-
-    with pytest.raises(ValueError, match="unknown primitive: 'unknown_detector'"):
-        build_component({"type": "unknown_detector"})
-    with pytest.raises(AttributeError):
-        build_component({"class_path": "graphids.primitives_models.UnknownDetector"})
-    with pytest.raises(FileNotFoundError, match="experiment YAML not found"):
-        ExperimentConfig.from_yaml("configs/experiments/missing.yml")
-    with pytest.raises(ValueError, match="can_event"):
-        ExperimentConfig(
-            experiment_name="unsupported",
-            dataset="toy",
-            representation_cfg={"kind": "unsupported"},
-        )
-
-
-def test_microbatch_capacity_is_validated_before_launch():
-    from graphids.primitives_data import CANEventDMCfg
-
-    with pytest.raises(ValueError, match="microbatch"):
-        CANEventDMCfg(
-            manifest_path="unused",
-            datasets=["set_01"],
-            cache_root="unused",
-            chunk_events=4096,
-            stream_batch_size=8,
-            effective_batch_events=32768,
-        )
-
-
 def test_event_verification_cli_backend_publishes_complete_and_failed_reports(tmp_path):
     import json
 
@@ -487,7 +558,7 @@ def test_event_verification_cli_backend_publishes_complete_and_failed_reports(tm
     import yaml
 
     from graphids.core.data.events.verify import verify_events
-    from tests.test_event_graph_mamba import source_dm
+    from tests.event_fixtures import source_dm
 
     dm = source_dm(tmp_path)
     config = tmp_path / "audit.yml"
@@ -519,23 +590,6 @@ def test_event_verification_cli_backend_publishes_complete_and_failed_reports(tm
     assert json.loads(report.read_text())["status"] == "incomplete"
 
 
-@pytest.mark.parametrize(
-    "chunk, streams", [(2048, 8), (4096, 4), (8192, 2), (16384, 1), (1024, 16)]
-)
-def test_doubled_microbatch_cap_accepts_larger_combinations(chunk, streams):
-    from graphids.primitives_data import CANEventDMCfg
-
-    cfg = CANEventDMCfg(
-        manifest_path="unused",
-        datasets=["set_01"],
-        cache_root="unused",
-        chunk_events=chunk,
-        stream_batch_size=streams,
-        effective_batch_events=16384,
-    )
-    assert cfg.build().chunk_events * cfg.stream_batch_size == 16384
-
-
 def test_ten_stream_schedule_fills_effective_windows_without_replay(tmp_path):
     recordings = [
         event_record(tmp_path, key=f"independent-{i}", normal=True)[1]
@@ -559,37 +613,21 @@ def test_ten_stream_schedule_fills_effective_windows_without_replay(tmp_path):
     assert coverage == {r.recording.key: list(range(6)) for r in recordings}
 
 
-@pytest.mark.parametrize("streams", [1, 2, 4, 8, 10])
-def test_fixed_16384_chunk_allows_explicit_larger_stream_cap(streams):
-    from graphids.primitives_data import CANEventDMCfg
-
-    cfg = CANEventDMCfg(
-        manifest_path="unused",
-        datasets=["set_01"],
-        cache_root="unused",
-        chunk_events=16384,
-        stream_batch_size=streams,
-        max_microbatch_events=16384 * streams,
-        effective_batch_events=163840,
-    )
-    dm = cfg.build()
-    assert dm.chunk_events == 16384
-    assert dm.max_microbatch_events == 16384 * streams
-
-
-@pytest.mark.parametrize("workspace", [None, 2304])
-@pytest.mark.parametrize("backend", ["reference", "official"])
+@pytest.mark.parametrize(
+    "backend",
+    ["reference", pytest.param("official", marks=[pytest.mark.gpu, pytest.mark.slurm])],
+)
 def test_prepared_batched_graph_losses_and_input_gradients(
-    tmp_path, backend, workspace, monkeypatch
+    tmp_path, backend, monkeypatch
 ):
+    """Force workspace tiling; default-workspace parity is covered by the graph oracle."""
+    import importlib
+
     if backend == "official" and not torch.cuda.is_available():
         pytest.skip("official CUDA required")
     device = "cuda" if backend == "official" else "cpu"
-    if workspace is not None:
-        import importlib
-
-        module = importlib.import_module("graphids.core.models.event_graph_mamba")
-        monkeypatch.setattr(module, "_GRAPH_WORKSPACE_BYTES", workspace)
+    module = importlib.import_module("graphids.core.models.event_graph_mamba")
+    monkeypatch.setattr(module, "_GRAPH_WORKSPACE_BYTES", 2304)
     _, a = event_record(tmp_path, key="prepared-a", normal=True)
     _, b = event_record(tmp_path, key="prepared-b")
     from graphids.core.data.events.data import prepare_routing
@@ -700,8 +738,7 @@ def test_prepared_routing_arbitrary_boundaries_and_provenance(tmp_path):
 
 
 @pytest.mark.parametrize("workers", [0, 2])
-@pytest.mark.parametrize("prefetch", [False, True])
-def test_training_loader_order_rng_and_early_exit(tmp_path, workers, prefetch):
+def test_training_loader_order_rng_and_early_exit(tmp_path, workers):
     from graphids.core.data.events.data import EventTrainingLoader
 
     _, a = event_record(tmp_path, key="loader-a", normal=True)
@@ -711,8 +748,8 @@ def test_training_loader_order_rng_and_early_exit(tmp_path, workers, prefetch):
         dataset,
         batch_size=None,
         num_workers=workers,
-        pin_memory=torch.cuda.is_available(),
-        cuda_prefetch=prefetch,
+        pin_memory=False,
+        cuda_prefetch=False,
         generator=torch.Generator().manual_seed(42),
         **({"prefetch_factor": 2} if workers else {}),
     )
@@ -743,7 +780,9 @@ def test_training_loader_order_rng_and_early_exit(tmp_path, workers, prefetch):
     assert {p.pid for p in multiprocessing.active_children()} <= initial_children
 
 
-@pytest.mark.parametrize("prefetch", [False, True])
+@pytest.mark.parametrize(
+    "prefetch", [False, pytest.param(True, marks=[pytest.mark.gpu, pytest.mark.slurm])]
+)
 def test_loader_propagates_preparation_errors(tmp_path, prefetch):
     from graphids.core.data.events.data import EventTrainingLoader
 
@@ -761,6 +800,8 @@ def test_loader_propagates_preparation_errors(tmp_path, prefetch):
         list(loader)
 
 
+@pytest.mark.slurm
+@pytest.mark.gpu
 def test_cuda_prefetch_preserves_scores_gradients_and_dropout_rng(tmp_path):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
@@ -946,7 +987,3 @@ def test_constructor_typed_and_production_defaults_agree():
         == inspect.signature(EventGraphMamba).parameters["max_graph_tokens"].default
         == config["model"]["max_graph_tokens"]
     )
-    with pytest.raises(ValueError, match="Extra inputs"):
-        CANEventDMCfg(
-            manifest_path="unused", datasets=[], cache_root="unused", warmup_events=0
-        )

@@ -19,6 +19,7 @@ from torch.nn import functional as F
 
 from graphids import event_defaults as defaults
 from graphids.core.evaluation import EventScores
+from graphids.primitives_models import EventGraphMambaCfg
 
 from .mamba_chunk import mamba_chunk
 
@@ -41,43 +42,44 @@ class EventGraphMamba(pl.LightningModule):
     def __init__(
         self,
         *,
-        width=128,
-        layers=2,
-        d_state=16,
-        d_conv=4,
-        expand=2,
-        dropout=0.1,
-        backend="official",
-        learning_rate=1e-3,
-        weight_decay=0.01,
-        payload_weight=1.0,
-        positive_weight=1.0,
-        node_capacity=512,
-        max_graph_tokens=defaults.MAX_GRAPH_TOKENS,
-        schema_version=1,
+        width: int = 128,
+        layers: int = 2,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+        dropout: float = 0.1,
+        backend: str = "official",
+        learning_rate: float = 1e-3,
+        weight_decay: float = 0.01,
+        payload_weight: float = 1.0,
+        positive_weight: float = 1.0,
+        node_capacity: int = 512,
+        max_graph_tokens: int = defaults.MAX_GRAPH_TOKENS,
+        schema_version: int = 1,
     ):
         super().__init__()
-        if backend not in ("official", "reference") or schema_version != 1:
-            raise ValueError("unsupported event Graph-Mamba backend/schema")
-        if (
-            min(width, layers, d_state, d_conv, expand, node_capacity, max_graph_tokens)
-            < 1
-        ):
-            raise ValueError("positive event model dimensions/capacities required")
-        if (
-            not 0 <= dropout < 1
-            or not math.isfinite(payload_weight)
-            or payload_weight < 0
-            or not math.isfinite(positive_weight)
-            or positive_weight <= 0
-        ):
-            raise ValueError("invalid event dropout or loss weight")
-        self.save_hyperparameters()
+        cfg = EventGraphMambaCfg(
+            width=width,
+            layers=layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+            dropout=dropout,
+            backend=backend,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            payload_weight=payload_weight,
+            positive_weight=positive_weight,
+            node_capacity=node_capacity,
+            max_graph_tokens=max_graph_tokens,
+            schema_version=schema_version,
+        )
+        self.save_hyperparameters(cfg.model_dump(exclude={"type"}))
         # Exact frame fields encoded numerically: bytes, byte-presence masks,
         # all 29 ID bits, byte length, elapsed time, preceding interarrival time.
-        self.input_proj = nn.Linear(48, width)
-        self.norms = nn.ModuleList(nn.LayerNorm(width) for _ in range(layers))
-        if backend == "official":
+        self.input_proj = nn.Linear(48, cfg.width)
+        self.norms = nn.ModuleList(nn.LayerNorm(cfg.width) for _ in range(cfg.layers))
+        if cfg.backend == "official":
             from graphids.runtime_checks import assert_mamba_backend
 
             assert_mamba_backend()
@@ -85,29 +87,34 @@ class EventGraphMamba(pl.LightningModule):
 
             self.temporal = nn.ModuleList(
                 Mamba(
-                    d_model=width,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    expand=expand,
+                    d_model=cfg.width,
+                    d_state=cfg.d_state,
+                    d_conv=cfg.d_conv,
+                    expand=cfg.expand,
                     layer_idx=i,
                 )
-                for i in range(layers)
+                for i in range(cfg.layers)
             )
         else:
             from .mamba_reference import ReferenceMamba
 
             self.temporal = nn.ModuleList(
-                ReferenceMamba(width, d_state, d_conv, expand) for _ in range(layers)
+                ReferenceMamba(cfg.width, cfg.d_state, cfg.d_conv, cfg.expand)
+                for _ in range(cfg.layers)
             )
-        self.dropout = nn.Dropout(dropout)
-        self.query, self.key, self.value = (nn.Linear(width, width) for _ in range(3))
-        self.graph_gate = nn.Linear(width * 2, width)
-        self.graph_norm = nn.LayerNorm(width)
-        self.classifier = nn.Linear(width, 1)
+        self.dropout = nn.Dropout(cfg.dropout)
+        self.query, self.key, self.value = (
+            nn.Linear(cfg.width, cfg.width) for _ in range(3)
+        )
+        self.graph_gate = nn.Linear(cfg.width * 2, cfg.width)
+        self.graph_norm = nn.LayerNorm(cfg.width)
+        self.classifier = nn.Linear(cfg.width, 1)
         # Header/current arrival are known; current payload is absent from every
         # path feeding this forecast. Predictions precede the frame-state update.
         self.payload_head = nn.Sequential(
-            nn.Linear(width * 2 + 32, width), nn.SiLU(), nn.Linear(width, 8 * 256)
+            nn.Linear(cfg.width * 2 + 32, cfg.width),
+            nn.SiLU(),
+            nn.Linear(cfg.width, 8 * 256),
         )
         self.automatic_optimization = False
         self._training_states = {}
@@ -115,10 +122,10 @@ class EventGraphMamba(pl.LightningModule):
         self._stream_state = None
         self._scores = None
         self._source_manifest_digest = None
+        self._resume_contract = None
+        self._resume_rng = None
 
     def prepare_from_datamodule(self, dm):
-        if getattr(dm.representation_cfg, "kind", None) != "can_event":
-            raise ValueError("event_graph_mamba requires can_event_dm")
         digest = dm.manifest.digest
         if (
             self._source_manifest_digest is not None
@@ -400,6 +407,17 @@ class EventGraphMamba(pl.LightningModule):
 
     def batched_loss_sums(self, outputs, batches):
         """One classification reduction and one eligible normal-byte reduction."""
+        return self._loss_sums(outputs, batches)
+
+    @staticmethod
+    def _payload_nll(logits, payload):
+        """Unmasked categorical byte losses, shaped [frames, 8]."""
+        return F.cross_entropy(
+            logits.flatten(0, 1), payload.long().flatten(), reduction="none"
+        ).reshape(-1, 8)
+
+    def _loss_sums(self, outputs, batches, *, payload_nll=None):
+        """Reduce objectives, optionally reusing one byte-loss tensor per batch."""
         logits = torch.cat([o["classification_logits"] for o in outputs])
         labels = torch.cat([b.labels for b in batches])
         scored = torch.cat([b.scored for b in batches])
@@ -414,8 +432,8 @@ class EventGraphMamba(pl.LightningModule):
             * known
         ).sum()
         eligible = [
-            (o, b)
-            for o, b in zip(outputs, batches, strict=True)
+            (i, o, b)
+            for i, (o, b) in enumerate(zip(outputs, batches, strict=True))
             if b.verified_normal and b.payload_length_verified
         ]
         # Preserve a connected zero even when the entire objective is masked.
@@ -425,22 +443,27 @@ class EventGraphMamba(pl.LightningModule):
         )
         count = torch.zeros((), dtype=torch.long, device=logits.device)
         if eligible:
-            predictions = torch.cat([o["payload_logits"] for o, _ in eligible])
-            targets = torch.cat([b.payload for _, b in eligible]).long()
-            lengths = torch.cat([b.lengths for _, b in eligible])
-            selected = torch.cat([b.scored for _, b in eligible])
+            lengths = torch.cat([b.lengths for _, _, b in eligible])
+            selected = torch.cat([b.scored for _, _, b in eligible])
             valid = (
                 torch.arange(8, device=logits.device)[None] < lengths[:, None]
             ) & selected[:, None]
-            nll = F.cross_entropy(
-                predictions.flatten(0, 1), targets.flatten(), reduction="none"
-            ).reshape(-1, 8)
+            if payload_nll is None:
+                nll = self._payload_nll(
+                    torch.cat([o["payload_logits"] for _, o, _ in eligible]),
+                    torch.cat([b.payload for _, _, b in eligible]),
+                )
+            else:
+                nll = torch.cat([payload_nll[i] for i, _, _ in eligible])
             payload = payload + (nll * valid).sum()
             count = valid.sum()
         return cls, known.sum(), payload, count
 
     def losses(self, output, batch):
-        cls, nc, payload, npayload = self.loss_sums(output, batch)
+        return self._normalize_loss_sums(self.loss_sums(output, batch))
+
+    def _normalize_loss_sums(self, sums):
+        cls, nc, payload, npayload = sums
         cls, payload = cls / nc.clamp_min(1), payload / npayload.clamp_min(1)
         return cls + self.hparams.payload_weight * payload, dict(
             classification=cls, payload=payload
@@ -456,6 +479,11 @@ class EventGraphMamba(pl.LightningModule):
             )
         self._training_states = {}
         self._training_coverage = {}
+        self._expected_training_coverage = {
+            key: recording.count
+            for key, recording in self.trainer.datamodule.event_recordings.items()
+            if recording.recording.role == "train_query"
+        }
         self._training_totals = next(self.parameters()).new_zeros(
             4, dtype=torch.float64
         )
@@ -491,14 +519,9 @@ class EventGraphMamba(pl.LightningModule):
             optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm"
         )
         optimizer.step()
-        expected = {
-            k: r.count
-            for k, r in self.trainer.datamodule.event_recordings.items()
-            if r.recording.role == "train_query"
-        }
         self._epoch_complete = (
             batch_idx + 1 == self.trainer.num_training_batches
-            and self._training_coverage == expected
+            and self._training_coverage == self._expected_training_coverage
             and not self._training_states
         )
         # Publish before epoch-end callbacks (including Ray's report/checkpoint).
@@ -537,11 +560,19 @@ class EventGraphMamba(pl.LightningModule):
         if batch.row_start == 0:
             self._stream_state = None
         output, self._stream_state = self.stream(batch, self._stream_state)
-        _, parts = self.losses(output, batch)
+        publish = not self.trainer.sanity_checking and self.trainer.is_global_zero
+        byte_losses = (
+            [self._payload_nll(output["payload_logits"], batch.payload)]
+            if publish
+            else None
+        )
+        _, parts = self._normalize_loss_sums(
+            self._loss_sums([output], [batch], payload_nll=byte_losses)
+        )
         self.log_dict(
             {f"{prefix}/{k}": v for k, v in parts.items()}, batch_size=len(batch.ids)
         )
-        if self.trainer.sanity_checking or not self.trainer.is_global_zero:
+        if not publish:
             return
         if self._scores is None:
             self._scores = EventScores(
@@ -551,12 +582,7 @@ class EventGraphMamba(pl.LightningModule):
             )
         mask = torch.arange(8, device=batch.ids.device)[None] < batch.lengths[:, None]
         mask &= batch.payload_length_verified
-        nll = F.cross_entropy(
-            output["payload_logits"].flatten(0, 1),
-            batch.payload.long().flatten(),
-            reduction="none",
-        ).reshape(-1, 8)
-        anomaly = (nll * mask).sum(-1) / mask.sum(-1).clamp_min(1)
+        anomaly = (byte_losses[0] * mask).sum(-1) / mask.sum(-1).clamp_min(1)
         values = (
             torch.stack(
                 (
@@ -638,10 +664,10 @@ class EventGraphMamba(pl.LightningModule):
         }
 
     def on_train_start(self):
-        contract = getattr(self, "_resume_contract", None)
+        contract = self._resume_contract
         if contract and contract.get("data_config") != self._data_identity():
             raise ValueError("checkpoint training data configuration differs")
-        rng = getattr(self, "_resume_rng", None)
+        rng = self._resume_rng
         if rng:
             import random
 

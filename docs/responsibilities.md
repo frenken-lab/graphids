@@ -3,8 +3,8 @@
 Experiment YAML in `configs/experiments/` defines a launchable run: source data,
 model, representation, resources and `fit` or `test` stage. The typed boundary
 in `graphids/exp/config.py` expands inheritance, checks representation agreement,
-and rejects retired contracts. `graphids/primitives*.py` exports only `can_event`,
-`can_event_dm` and `event_graph_mamba` configuration primitives.
+and rejects retired contracts. `graphids/primitives*.py` exports the concrete `CANEventRepresentationCfg`,
+data/model configs, and the `can_event_dm` / `event_graph_mamba` factories.
 
 `graphids/core/data/recordings.py` owns reviewed recording/provenance validation.
 `graphids/core/data/events/` owns lossless caches, chronological independent-stream
@@ -13,7 +13,8 @@ scheduling, eligible target totals, and source ingestion verification.
 truncated backpropagation, separately normalized objectives, epoch checkpoints,
 and Lightning evaluation hooks. `graphids/core/evaluation.py` owns packed frame
 scores, recording coverage checks and the evaluation index; it uses only NumPy
-and the standard library. Shared exact AP lives in `graphids/core/metrics.py`.
+and the standard library. Shared exact AP and AUC live in `graphids/core/metrics.py`, using one
+tied-score ranking pass.
 
 `graphids/exp/runtime.py` constructs data, models and callbacks.
 `graphids/exp/ray_backend.py` launches Ray workers and runs Lightning, journals

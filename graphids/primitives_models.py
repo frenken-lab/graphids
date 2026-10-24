@@ -20,7 +20,7 @@ class EventGraphMambaCfg(_Cfg):
     expand: int = Field(default=2, ge=1)
     dropout: float = Field(default=0.1, ge=0, lt=1)
     backend: Literal["official", "reference"] = "official"
-    learning_rate: float = Field(default=0.001, gt=0)
+    learning_rate: float = Field(default=0.001, ge=0)
     weight_decay: float = Field(default=0.01, ge=0)
     payload_weight: float = Field(default=1.0, ge=0, allow_inf_nan=False)
     positive_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
@@ -28,11 +28,7 @@ class EventGraphMambaCfg(_Cfg):
     max_graph_tokens: int = Field(default=defaults.MAX_GRAPH_TOKENS, ge=1)
     schema_version: Literal[1] = 1
 
-    def build(self, *, loss_fn=None):
-        if loss_fn is not None:
-            raise ValueError(
-                "event_graph_mamba defines frame BCE and normal-only payload likelihood"
-            )
+    def build(self):
         from graphids.core.models.event_graph_mamba import EventGraphMamba
 
         return EventGraphMamba(**self.model_dump(exclude={"type"}))

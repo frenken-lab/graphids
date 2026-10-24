@@ -7,12 +7,13 @@ the only source of truth.
 from __future__ import annotations
 
 import json
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from graphids._fs import atomic_write_json
 
 
 class _StrictModel(BaseModel):
@@ -20,7 +21,9 @@ class _StrictModel(BaseModel):
 
 
 class EventRecord(_StrictModel):
-    ts: str = Field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds"))
+    ts: str = Field(
+        default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds")
+    )
     status: str
     stage: str
     message: str
@@ -32,7 +35,9 @@ class RunManifest(_StrictModel):
     name: str
     stage: str
     git_sha: str
-    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds"))
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(UTC).isoformat(timespec="seconds")
+    )
     run_dir: str
     config: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, str] = Field(default_factory=dict)
@@ -52,22 +57,17 @@ def events_path(run_dir: str | Path, *, name: str = "events.jsonl") -> Path:
     return journal_dir(run_dir) / name
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
-        tmp = Path(f.name)
-    tmp.replace(path)
-
-
-def write_manifest(run_dir: str | Path, manifest: RunManifest, *, name: str = "manifest.json") -> Path:
+def write_manifest(
+    run_dir: str | Path, manifest: RunManifest, *, name: str = "manifest.json"
+) -> Path:
     path = manifest_path(run_dir, name=name)
-    _write_json_atomic(path, manifest.model_dump(mode="json"))
+    atomic_write_json(path, manifest.model_dump(mode="json"))
     return path
 
 
-def append_event(run_dir: str | Path, event: EventRecord, *, name: str = "events.jsonl") -> Path:
+def append_event(
+    run_dir: str | Path, event: EventRecord, *, name: str = "events.jsonl"
+) -> Path:
     path = events_path(run_dir, name=name)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -76,15 +76,23 @@ def append_event(run_dir: str | Path, event: EventRecord, *, name: str = "events
     return path
 
 
-def load_manifest(run_dir: str | Path, *, name: str = "manifest.json") -> RunManifest | None:
+def load_manifest(
+    run_dir: str | Path, *, name: str = "manifest.json"
+) -> RunManifest | None:
     path = manifest_path(run_dir, name=name)
     if not path.exists():
         return None
     return RunManifest.model_validate(json.loads(path.read_text()))
 
 
-def load_events(run_dir: str | Path, *, name: str = "events.jsonl") -> list[EventRecord]:
+def load_events(
+    run_dir: str | Path, *, name: str = "events.jsonl"
+) -> list[EventRecord]:
     path = events_path(run_dir, name=name)
     if not path.exists():
         return []
-    return [EventRecord.model_validate(json.loads(line)) for line in path.read_text().splitlines() if line.strip()]
+    return [
+        EventRecord.model_validate(json.loads(line))
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]

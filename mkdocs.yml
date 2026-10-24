@@ -115,6 +115,7 @@ nav:
   - Architecture:
       - Message-preserving graph-Mamba: reference/graph-mamba-events.md
       - Module responsibilities: responsibilities.md
+      - Research code style: reference/research-code-style.md
       - Config system: reference/config-architecture.md
       - Data architecture: reference/data-architecture.md
       - Data flow: reference/data-flow.md

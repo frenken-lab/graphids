@@ -34,13 +34,7 @@ mamba = [
     "setuptools>=70",
     "wheel>=0.44",
 ]
-analysis = ["umap-learn>=0.5", "seaborn>=0.13", "torch-cka>=0.21", "huggingface-hub>=0.24"]
 dev = ["pytest>=7.0.0", "httpx>=0.27", "ruff>=0.4"]
-db = ["psycopg[binary]>=3.1"]
-decoding = [
-    "cantools>=42,<43",
-]
-causal-diagnostic = ["pgmpy>=1.1,<2"]
 
 [project.scripts]
 graphids = "graphids.__main__:main"
@@ -52,8 +46,9 @@ packages = ["graphids"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "gpu: requires CUDA and the pinned official Mamba backend",
     "slow: marks tests as slow (>30s, deselect with '-m not slow')",
-    "slurm: marks tests that require SLURM submission (torch imports, CUDA, full training)",
+    "slurm: requires a compute allocation (training or CUDA; synthetic CPU checks are unmarked)",
 ]
 filterwarnings = [
     "ignore:Can't initialize NVML:UserWarning:torch.cuda",
@@ -69,7 +64,6 @@ ignore = ["E501", "E402", "E741", "W291", "W292", "W293", "F541", "B905", "B017"
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/*" = ["F401"]
 
 [tool.mypy]
 python_version = "3.12"

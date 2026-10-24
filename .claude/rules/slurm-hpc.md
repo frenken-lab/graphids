@@ -1,8 +1,8 @@
 # GraphIDS SLURM / HPC Conventions
 
 OSC Pitzer/Cardinal/Ascend use account PAS1266, Python 3.12, and the project
-`.venv`. Source `scripts/slurm/_preamble.sh` inside allocations. GPU diagnostics
-share `_diagnostic.sh`; keep each script's resource and correctness gates.
+`.venv`. Source `scripts/slurm/_preamble.sh` inside allocations. Keep each
+diagnostic script's resource and correctness gates.
 
 - Never run pytest or training workloads on login nodes. Use a SLURM allocation.
 - Static lint, git, config inspection, and dry-run rendering are login-node safe.

@@ -75,71 +75,6 @@ def test_mlflow_system_metrics_callback_lifecycle(monkeypatch):
     ]
 
 
-def test_build_lightning_run_attaches_logger(monkeypatch):
-    import sys
-    import types
-
-    from graphids._mlflow import MLflowSystemMetricsCallback
-    from graphids.exp import ray_backend, runtime
-
-    captured: dict[str, object] = {}
-
-    class DummyData:
-        def setup(self, stage):
-            captured["setup_stage"] = stage
-
-    class DummyModel:
-        def prepare_from_datamodule(self, data):
-            captured["prepared_with"] = data
-
-    class DummyTrainer:
-        def __init__(self, **kwargs):
-            captured["trainer_kwargs"] = kwargs
-            self.callback_metrics = {}
-            self.global_step = 0
-
-        def fit(self, model, datamodule, ckpt_path=None):
-            captured["fit_model"] = model
-            captured["fit_datamodule"] = datamodule
-
-    class DummyLightning:
-        Trainer = DummyTrainer
-
-        @staticmethod
-        def seed_everything(seed, workers):
-            captured["seed"] = seed
-            captured["workers"] = workers
-
-    lightning_pkg = types.ModuleType("lightning")
-    lightning_pkg.__path__ = []
-    lightning_pkg.pytorch = DummyLightning
-    monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
-    monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
-    monkeypatch.setattr(
-        runtime, "resolve_spec", lambda spec: {} if spec == {} else DummyModel()
-    )
-
-    logger = object()
-    result = ray_backend._build_lightning_run(
-        "fit",
-        {
-            "model": {"type": "dummy_model"},
-            "data": {"type": "dummy_data"},
-            "seed_everything": 123,
-        },
-        logger=logger,
-        ray=False,
-    )
-
-    assert result == {"stage": "fit", "trainer": "DummyTrainer", "metrics": {}}
-    assert captured["trainer_kwargs"]["logger"] is logger
-    callbacks = captured["trainer_kwargs"]["callbacks"]
-    assert any(isinstance(cb, MLflowSystemMetricsCallback) for cb in callbacks)
-    assert captured["seed"] == 123
-    assert captured["workers"] is True
-
-
 def test_manifest_and_events_round_trip(tmp_path):
     from graphids.exp.config import (
         FitRunPayload,
@@ -164,9 +99,7 @@ def test_manifest_and_events_round_trip(tmp_path):
         seed=42,
         git_sha="abc123",
         payload=FitRunPayload(
-            model={
-                "class_path": "graphids.primitives_models.EventGraphMambaCfg"
-            },
+            model={"class_path": "graphids.primitives_models.EventGraphMambaCfg"},
             data={"class_path": "graphids.primitives_data.CANEventDMCfg"},
         ),
         resources=ResourceConfig(),

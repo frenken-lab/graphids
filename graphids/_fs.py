@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -18,24 +19,23 @@ def _fsync_dir(directory: Path) -> None:
         os.close(fd)
 
 
-def touch_marker(path: Path) -> None:
-    """Create a phase marker file with durable fsync (NFS-safe).
-
-    Fsyncs both the file and its parent directory so the marker is
-    visible on NFS before this function returns.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o664)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    _fsync_dir(path.parent)
-
-
 def _sha256_file(path: Path) -> str:
     with path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Publish indented, sorted JSON with a same-directory atomic replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def atomic_save(obj: Any, path: Path) -> None:
@@ -47,7 +47,9 @@ def atomic_save(obj: Any, path: Path) -> None:
     import torch  # heavy — keep out of module scope so _fs stays import-light
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
     os.close(fd)
     tmp = Path(tmp_name)
     try:
@@ -63,29 +65,6 @@ def atomic_save(obj: Any, path: Path) -> None:
             tmp.unlink()
         raise
     path.with_suffix(path.suffix + ".sha256").write_text(_sha256_file(path) + "\n")
-    _fsync_dir(path.parent)
-
-
-def atomic_write_text(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` atomically (tempfile + fsync + rename).
-
-    NFS-safe: the temp file is fsynced before rename, and the parent dir
-    is fsynced after rename so other clients see the new file without
-    waiting for attribute-cache expiry. Use for JSON / other text payloads;
-    ``atomic_save`` is the torch-binary equivalent.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.rename(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
     _fsync_dir(path.parent)
 
 

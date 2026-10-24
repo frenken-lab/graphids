@@ -80,7 +80,7 @@ Important classes:
 
 - `ExperimentConfig`: top-level YAML contract.
 - `RunConfig`: fully resolved single launch.
-- `FitRunPayload`: `data`, `model`, `loss_fn`, `trainer`, `callbacks`.
+- `FitRunPayload`: `data`, `model`, `trainer`, `callbacks`, optional `compile` and `ckpt_path`.
 - `ResourceConfig`: cluster/resource metadata.
 - `OutputConfig`: run directory, journal, artifact, and checkpoint paths.
 
@@ -98,7 +98,7 @@ Primitive config objects are Pydantic models with `extra="forbid"`:
 
 - data: `graphids.primitives_data`
 - models: `graphids.primitives_models`
-- representations: `graphids.core.data.preprocessing.representations`
+- event representation: `graphids.core.data.events.representation.CANEventRepresentationCfg`
 
 Ray launch instantiation accepts either:
 
@@ -108,8 +108,12 @@ Ray launch instantiation accepts either:
 
 `graphids.exp.runtime` owns resolution, seeding, model preparation, callbacks,
 and trainer kwargs for Ray launches and bounded event benchmarks.
-Existing imports from `graphids.exp.ray_backend` remain available. This lets
-YAML use compact primitive specs for common objects and explicit class paths for
+Direct data/model constructors reuse primitive validation, including checkpoint
+reconstruction. Builders propagate errors without argument filtering or retries.
+The event model owns its objectives: a non-null `loss_fn` setting is rejected
+when loading an experiment or resolved payload. Old payloads with `loss_fn: null`
+remain readable. A zero learning rate is supported for frozen-weight diagnostics.
+Import construction helpers from `graphids.exp.runtime`. This lets YAML use compact primitive specs for common objects and explicit class paths for
 callbacks without putting import logic in the YAML loader or CLI.
 
 ## 4. Ray Dispatch
@@ -131,8 +135,8 @@ Stage dispatch:
 
 | Stage | Ray action |
 |---|---|
-| `fit` | Build datamodule/model/loss/callbacks, run `trainer.fit`. |
-| `test` | Build datamodule/model/loss/callbacks, run `trainer.test`. |
+| `fit` | Build datamodule/model/callbacks, run `trainer.fit`. |
+| `test` | Build datamodule/model/callbacks, run `trainer.test`. |
 
 After `fit` and `test`, the Ray backend captures final `trainer.callback_metrics` into
 the returned run event payload and offline MLflow ingest payload. A separate

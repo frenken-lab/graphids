@@ -7,10 +7,10 @@ encode policy Lightning's stock callbacks don't:
   + a `<ckpt>.sha256` sidecar so [`graphids._fs.atomic_load`](../reference/write-paths.md)
   can verify bytes on read (GPFS truncates surprise us; sidecar is the
   load-time integrity check).
-- `SnapshotBatchProfilerCallback` — optional scored-bin, physical-time,
-  event, node-bin, and graph-message instrumentation. Synchronization is opt-in.
-- `ResourceUtilizationCallback` — MLflow system metric summaries.
-- `VRAMDriftCallback` — device-memory drift checks between epochs.
+
+`graphids._mlflow.MLflowSystemMetricsCallback` records phase throughput and native
+MLflow system metrics. `graphids._mlflow.MLflowSystemMetricsSummaryCallback`
+summarizes native metric histories for offline diagnostic runs.
 
 Lightning owns the training loop and callback lifecycle.
 

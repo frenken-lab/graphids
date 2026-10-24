@@ -84,24 +84,29 @@ are under `/users/PAS2022/rf15/graphids-cleanup-audits/20261023T182040Z/`.
 
 ## Cache Paths
 
-Graph caches are versioned by `graphids.paths.PREPROCESSING_VERSION`.
-
-Temporal event caches live under:
+Lossless event caches live under the configured `config.data.cache_root`:
 
 ```text
-{lake_root}/cache/v{PREPROCESSING_VERSION}/{dataset}/{representation_kind}_{representation_digest}_voc_{scope}/
-  processed/
-    data_train.pt
-    data_val.pt
-    data_test_<split>.pt
-    .complete
-  cache_metadata.json
+{cache_root}/event-v1-{recording_digest}/
+  metadata.json
+  times.npy
+  ids.npy
+  payload.npy
+  lengths.npy
+  labels.npy
 ```
 
-The representation digest is part of the cache path and cache key, so changing
-representation settings creates a distinct cache.
+`recording_digest` is the SHA256 of the reviewed recording dataclass serialized
+with sorted JSON keys. Cache construction verifies source bytes, builds in a
+staging directory, and publishes the complete directory under a file lock.
+The removed generic representation digest was not used by this active cache.
 
 ## Run Journals
+
+Run manifests and MLflow ingest payloads share `graphids._fs.atomic_write_json`:
+indented, sorted UTF-8 JSON with a final newline, written through a unique
+same-directory temporary file and atomic replacement. Failed serialization or
+replacement preserves the last published file and removes the temporary file.
 
 Ray Train workers run through `graphids.exp.ray_backend`, which writes:
 
@@ -147,7 +152,7 @@ MLflow artifact roots are explicit lake paths:
 
 MLflow system metrics are sampled by `MLflowSystemMetricsCallback` only when
 `GRAPHIDS_MLFLOW_MODE=online`. Offline diagnostic profiles can still record
-aggregate `resource/*` CPU/RSS/GPU metrics through `ResourceUtilizationCallback`
+aggregate `resource/*` CPU/RSS/GPU metrics through `graphids._mlflow.MLflowSystemMetricsSummaryCallback`
 because those values are copied from final `trainer.callback_metrics` into
 `.graphids/mlflow_ingest.json`.
 

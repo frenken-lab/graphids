@@ -11,7 +11,7 @@ GraphIDS has three observability surfaces:
 ## Run Directory
 
 ```text
-~/ray_results/{dataset}/{experiment_name}/{run_name}/
+{run_root}/{dataset}/{experiment_name}/{run_name}/
   .graphids/
     manifest.json
     events.jsonl
@@ -80,7 +80,6 @@ graphids.seed
 graphids.plan_id
 graphids.git_sha
 graphids.run_dir
-graphids.backend
 graphids.representation
 graphids.representation_cfg/*
 graphids.payload/*
@@ -91,31 +90,31 @@ Nested payload fields are flattened by `gx exp ingest`.
 
 ### Metrics
 
-Lightning modules log keys such as:
+The event model logs separately normalized classification and normal-only payload
+losses, plus exact frame metrics such as `val/classification_frame_ap`.
+`graphids.exp.ray_backend` captures scalar `trainer.callback_metrics` after
+`fit` and `test` into the offline ingest payload; vector metrics are omitted.
 
-```text
-train_loss
-train_acc
-val_loss
-val_acc
-val_auroc
-```
+`graphids._mlflow.MLflowSystemMetricsCallback` records phase throughput under
+`.graphids/phase_metrics.json`. When a live MLflow run is available it also starts
+MLflow's native system metrics monitor.
+Phase bookkeeping accumulates detached integer event counts and float64 time
+sums on each batch device. It transfers totals once at phase end before recording
+elapsed wall time. The scored mask determines event counts independently of
+label availability; exceptions discard unfinished counters.
 
-`graphids.exp.ray_backend` captures final `trainer.callback_metrics` after `fit`
-and `test` into the offline ingest payload, so short runs still leave final
-metric values.
 
 Offline diagnostic runs can include
-`graphids.core.callbacks.ResourceUtilizationCallback`. It samples CPU percent,
-process RSS, and, when NVML is available, GPU utilization and memory while the
-trainer runs. Final aggregate metrics such as `resource/cpu_percent_mean`,
-`resource/rss_gib_max`, `resource/gpu_util_percent_max`, and
-`resource/gpu_mem_gib_max` are written into `.graphids/mlflow_ingest.json` with
-the rest of the final callback metrics. If NVML is unavailable, the callback
-continues with CPU/RSS metrics.
+`graphids._mlflow.MLflowSystemMetricsSummaryCallback`. It maps native MLflow
+histories to `resource/*` CPU, system-memory, and GPU summaries, which are copied
+from final callback metrics into `.graphids/mlflow_ingest.json`.
+`resource/rss_gib_*` is a retained metric name for system memory usage, not
+process RSS. Missing optional GPU histories leave GPU summary keys absent.
+Summary metric families share history collection and reductions. GPU utilization
+means pool samples across devices, memory summaries retain their existing units,
+and `resource/samples` is the largest individual history length. Disabling GPU
+summaries avoids GPU-history lookups; unavailable histories remain optional.
 
-MLflow's own system metrics are sampled through `MLflowSystemMetricsCallback`
-only in `GRAPHIDS_MLFLOW_MODE=online`.
 
 ## SLURM Logs
 
@@ -131,7 +130,7 @@ Current jobs write under:
 Examples:
 
 ```bash
-tail -n 80 /fs/ess/PAS1266/graphids/slurm_logs/gat_snapshot_sequence_real_47912353.err
+tail -n 80 /fs/ess/PAS1266/graphids/slurm_logs/graph_mamba_events_source_seed42_47912353.err
 sacct -j 47912353 --format=JobID,JobName%36,State,ExitCode,Elapsed -P
 squeue -j 47912353 -o '%i %j %T %M %R'
 ```
@@ -149,7 +148,7 @@ exp_ids = [e.experiment_id for e in experiments]
 
 runs = client.search_runs(
     exp_ids,
-    filter_string="tags.graphids.plan_id = 'gat_snapshot_sequence_real'",
+    filter_string="tags.graphids.plan_id = 'graph_mamba_events_source_seed42'",
 )
 
 for run in runs:

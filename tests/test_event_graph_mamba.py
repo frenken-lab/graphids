@@ -1,7 +1,7 @@
 """Message preservation, causal graph/Mamba state, and runnable training contracts."""
 
 import json
-from dataclasses import asdict, replace
+from dataclasses import replace
 
 import lightning.pytorch as pl
 import numpy as np
@@ -9,13 +9,11 @@ import pytest
 import torch
 
 from graphids.core.data.events.data import (
-    CANEventDataModule,
     EventChunks,
     EventRecording,
     materialize_events,
 )
 from graphids.core.data.recordings import (
-    CANRecordingManifest,
     iter_rows,
     read_rows,
 )
@@ -23,41 +21,7 @@ from graphids.core.metrics import raw_average_precision
 from graphids.core.models.event_graph_mamba import EventGraphMamba
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.runtime import build_component
-from tests.event_fixtures import write_record
-
-pytestmark = pytest.mark.slurm
-
-
-def event_record(tmp_path, *, key="frames", normal=False, role="train_query"):
-    rec = write_record(
-        tmp_path,
-        key=key,
-        normal=normal,
-        role=role,
-        rows=[
-            (100.0, "0C9", "00010203040506", 0),
-            (100.001, "0C9", "FFFFFFFFFFFFFF", 0 if normal else 1),
-            (100.001, "0C9", "00010203040506", 0),
-            (100.009, "1F5", "00", 0),
-            (100.01, "0C9", "00010203040506", 0),
-            (100.02, "1F5", "", 0),
-        ],
-    )
-    return rec, EventRecording(materialize_events(rec, tmp_path / "cache"))
-
-
-def model(backend="reference", **kwargs):
-    torch.manual_seed(42)
-    return EventGraphMamba(
-        width=8,
-        layers=2,
-        d_state=3,
-        d_conv=3,
-        expand=1,
-        dropout=0,
-        backend=backend,
-        **kwargs,
-    )
+from tests.event_fixtures import event_record, model, source_dm
 
 
 def test_all_frames_payload_lengths_tied_timestamps_and_order_survive(tmp_path):
@@ -127,7 +91,8 @@ def test_fields_are_reversible_and_contain_no_label_or_recording_features(tmp_pa
     torch.testing.assert_close(net.fields(changed)[0], fields)
 
 
-def test_future_frames_and_new_ids_do_not_change_earlier_scores(tmp_path):
+def test_heads_obey_current_and_future_frame_causality(tmp_path):
+    """Classification sees the current frame; payload forecasting sees only the past."""
     _, events = event_record(tmp_path)
     batch = events.batch(0, events.count)
     altered = replace(
@@ -149,20 +114,16 @@ def test_future_frames_and_new_ids_do_not_change_earlier_scores(tmp_path):
     # The injected frame actually reaches the model: changing it changes its score.
     changed = replace(batch, payload=batch.payload.clone())
     changed.payload[1] = 0
+    changed_output = net(changed)
     assert not torch.allclose(
-        net(changed)["classification_logits"][1], a["classification_logits"][1]
+        changed_output["classification_logits"][1], a["classification_logits"][1]
     )
-
-
-def test_payload_prediction_cannot_see_current_payload(tmp_path):
-    _, events = event_record(tmp_path)
-    batch = events.batch(0, events.count)
-    altered = replace(batch, payload=batch.payload.clone())
-    altered.payload[1] = 0
-    net = model().eval()
-    a, b = net.scan([batch])[0][0], net.scan([altered])[0][0]
-    torch.testing.assert_close(a["payload_logits"][:2], b["payload_logits"][:2])
-    assert not torch.allclose(a["payload_logits"][2], b["payload_logits"][2])
+    torch.testing.assert_close(
+        a["payload_logits"][:2], changed_output["payload_logits"][:2]
+    )
+    assert not torch.allclose(
+        a["payload_logits"][2], changed_output["payload_logits"][2]
+    )
 
 
 def test_stream_matches_full_forward_across_arbitrary_chunks(tmp_path):
@@ -233,38 +194,7 @@ def test_objectives_use_only_scored_labels_and_verified_normal_payloads(tmp_path
         )
 
 
-def source_dm(tmp_path):
-    train, _ = event_record(tmp_path, key="train", normal=True)
-    val, _ = event_record(tmp_path, key="validation", role="val_query")
-    # Distinct content/provenance, independent source sessions.
-    path = tmp_path / "manifest.json"
-    # A reserved target path must never be opened by the event path.
-    target = replace(
-        val,
-        key="reserved",
-        vehicle="target",
-        session="reserved",
-        role="target_attack_test",
-        path="/nonexistent/reserved.csv",
-        sha256="f" * 64,
-    )
-    manifest = CANRecordingManifest((train, val, target), provenance_reviewed=True)
-    path.write_text(json.dumps(asdict(manifest)))
-    dm = CANEventDataModule(
-        manifest_path=str(path),
-        datasets=["set_01"],
-        cache_root=str(tmp_path / "cache"),
-        chunk_events=2,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-    )
-    dm.setup()
-    assert len(dm.event_recordings) == 2
-    assert all(not r.role.startswith("target") for r in dm.manifest.records)
-    return dm
-
-
+@pytest.mark.slurm
 def test_lightning_fit_evaluation_coverage_and_checkpoint_round_trip(tmp_path):
     dm = source_dm(tmp_path)
     net = model()
@@ -350,6 +280,8 @@ def test_typed_configuration_resolves_and_rejects_mixed_contracts():
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="requires pinned official CUDA backend"
 )
+@pytest.mark.slurm
+@pytest.mark.gpu
 def test_official_cuda_forward_gradients_and_carried_state(tmp_path):
     _, events = event_record(tmp_path)
     batch = events.batch(0, events.count).to("cuda")
@@ -395,6 +327,8 @@ def test_checkpoint_restore_cannot_replace_prepared_source_identity():
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="requires official CUDA backend"
 )
+@pytest.mark.slurm
+@pytest.mark.gpu
 def test_official_lightning_gpu_fit_and_complete_validation(tmp_path):
     dm = source_dm(tmp_path)
     net = model("official")

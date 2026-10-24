@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from graphids._fs import atomic_write_json
 from graphids.exp.config import RunConfig
 from graphids.exp.journal import journal_dir
 
@@ -25,15 +25,6 @@ class IngestResult:
 
 def ingest_payload_path(run_dir: str | Path) -> Path:
     return journal_dir(run_dir) / INGEST_PAYLOAD_NAME
-
-
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
-        tmp = Path(f.name)
-    tmp.replace(path)
 
 
 def mlflow_artifact_location(run: RunConfig) -> str:
@@ -99,7 +90,7 @@ def write_ingest_payload(
         failure=failure,
     )
     path = ingest_payload_path(run.outputs.run_dir)
-    _write_json_atomic(path, payload)
+    atomic_write_json(path, payload)
     return path
 
 

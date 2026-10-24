@@ -76,13 +76,11 @@ def mamba_chunk(block, x, conv, state, *, official, differentiable_state=True):
         return_last_state=True,
     )
     with torch.profiler.record_function("mamba.incoming_state_correction"):
-        cumulative = F.softplus(
-            dt.float() + block.dt_proj.bias.float()[None, :, None]
-        ).cumsum(-1)
+        delta = F.softplus(dt.float() + block.dt_proj.bias.float()[None, :, None])
+        cumulative = delta.cumsum(-1)
         tile = max(1, _WORKSPACE_BYTES // (3 * streams * inner * size * 4))
         corrections = []
         final_parts = []
-        delta = F.softplus(dt.float() + block.dt_proj.bias.float()[None, :, None])
         for lo in range(0, length, tile):
             hi = min(length, lo + tile)
             decay = torch.exp(cumulative[:, :, lo:hi, None] * A[None, :, None, :])

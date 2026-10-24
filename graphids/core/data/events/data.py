@@ -26,6 +26,7 @@ from graphids.core.data.recordings import (
     file_hash,
     iter_rows,
 )
+from graphids.primitives_data import CANEventDMCfg
 
 from .representation import CANEventRepresentationCfg
 
@@ -44,14 +45,14 @@ def recording_digest(rec):
 
 def materialize_events(rec: Recording, root: Path):
     """Two bounded-memory CSV passes; publish only fully written caches."""
+    if file_hash(Path(rec.path)) != rec.sha256:
+        raise ValueError(f"recording hash changed: {rec.key}")
     digest = recording_digest(rec)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / f"event-v1-{digest}"
     with FileLock(str(destination) + ".lock"):
         if (destination / "metadata.json").exists():
             return destination
-        if file_hash(Path(rec.path)) != rec.sha256:
-            raise ValueError(f"recording hash changed: {rec.key}")
         count = sum(1 for _ in iter_rows(rec))
         staging = Path(tempfile.mkdtemp(prefix=".events-", dir=root))
         try:
@@ -427,44 +428,49 @@ class CANEventDataModule(pl.LightningDataModule):
     def __init__(
         self,
         *,
-        manifest_path,
-        datasets,
-        cache_root,
-        representation_cfg=None,
-        chunk_events=defaults.CHUNK_EVENTS,
-        stream_batch_size=defaults.STREAM_BATCH_SIZE,
-        effective_batch_events=defaults.EFFECTIVE_BATCH_EVENTS,
-        max_microbatch_events=defaults.MAX_MICROBATCH_EVENTS,
-        num_workers=defaults.NUM_WORKERS,
-        pin_memory=defaults.PIN_MEMORY,
-        prefetch_factor=defaults.PREFETCH_FACTOR,
-        persistent_workers=defaults.PERSISTENT_WORKERS,
-        cuda_prefetch=defaults.CUDA_PREFETCH,
+        manifest_path: str | Path,
+        datasets: list[str],
+        cache_root: str | Path,
+        representation_cfg: CANEventRepresentationCfg | None = None,
+        chunk_events: int = defaults.CHUNK_EVENTS,
+        stream_batch_size: int = defaults.STREAM_BATCH_SIZE,
+        effective_batch_events: int = defaults.EFFECTIVE_BATCH_EVENTS,
+        max_microbatch_events: int = defaults.MAX_MICROBATCH_EVENTS,
+        num_workers: int = defaults.NUM_WORKERS,
+        pin_memory: bool = defaults.PIN_MEMORY,
+        prefetch_factor: int = defaults.PREFETCH_FACTOR,
+        persistent_workers: bool = defaults.PERSISTENT_WORKERS,
+        cuda_prefetch: bool = defaults.CUDA_PREFETCH,
     ):
         super().__init__()
-        self.manifest_path, self.datasets = manifest_path, datasets
-        self.cache_root = Path(cache_root)
-        self.representation_cfg = representation_cfg or CANEventRepresentationCfg()
-        if (
-            not 1 <= stream_batch_size <= 16
-            or not 1 <= max_microbatch_events <= 262144
-            or chunk_events * stream_batch_size > max_microbatch_events
-        ):
-            raise ValueError(
-                "use 1 to 16 streams within max_microbatch_events (at most 262144)"
-            )
-        self.max_microbatch_events = max_microbatch_events
-        if effective_batch_events < chunk_events * stream_batch_size:
-            raise ValueError("effective batch must cover one microbatch")
-        self.chunk_events = chunk_events
-        self.stream_batch_size, self.effective_batch_events = (
-            stream_batch_size,
-            effective_batch_events,
+        cfg = CANEventDMCfg(
+            manifest_path=str(manifest_path),
+            datasets=datasets,
+            cache_root=str(cache_root),
+            representation_cfg=representation_cfg or CANEventRepresentationCfg(),
+            chunk_events=chunk_events,
+            stream_batch_size=stream_batch_size,
+            effective_batch_events=effective_batch_events,
+            max_microbatch_events=max_microbatch_events,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
+            cuda_prefetch=cuda_prefetch,
         )
-        self.num_workers, self.pin_memory = num_workers, pin_memory
-        self.prefetch_factor = prefetch_factor
-        self.persistent_workers = persistent_workers
-        self.cuda_prefetch = cuda_prefetch
+        self.manifest_path = cfg.manifest_path
+        self.datasets = cfg.datasets
+        self.cache_root = Path(cfg.cache_root)
+        self.representation_cfg = cfg.representation_cfg
+        self.chunk_events = cfg.chunk_events
+        self.stream_batch_size = cfg.stream_batch_size
+        self.effective_batch_events = cfg.effective_batch_events
+        self.max_microbatch_events = cfg.max_microbatch_events
+        self.num_workers = cfg.num_workers
+        self.pin_memory = cfg.pin_memory
+        self.prefetch_factor = cfg.prefetch_factor
+        self.persistent_workers = cfg.persistent_workers
+        self.cuda_prefetch = cfg.cuda_prefetch
         self.train_sampler = None  # disable Lightning's automatic padded DDP sampler
         self.event_recordings = {}
 
@@ -486,8 +492,6 @@ class CANEventDataModule(pl.LightningDataModule):
         for rec in self.manifest.records:
             if rec.role not in ("train_query", "val_query"):
                 continue
-            if file_hash(Path(rec.path)) != rec.sha256:
-                raise ValueError(f"recording hash changed: {rec.key}")
             recordings[rec.key] = EventRecording(
                 materialize_events(rec, self.cache_root)
             )

@@ -1,6 +1,5 @@
 import json
 
-import pytest
 import yaml
 
 from scripts.event_ablation_report import suite_report
@@ -43,22 +42,31 @@ def write_arm(root, name, *, finished=True, cover=10):
     return dict(name=name, config=str(path), job_id=name)
 
 
-@pytest.mark.parametrize("mismatch", [False, True])
 def test_report_requires_matched_coverage_and_selects_one_epoch_for_all_groups(
-    tmp_path, mismatch
+    tmp_path,
 ):
     jobs = [
         write_arm(tmp_path, "joint"),
-        write_arm(tmp_path, "classification", cover=11 if mismatch else 10),
+        write_arm(tmp_path, "classification"),
     ]
     path = tmp_path / "suite.json"
     path.write_text(json.dumps(dict(root=str(tmp_path), training_jobs=jobs)))
     report = suite_report(path)
-    assert report["status"] == ("incomplete" if mismatch else "complete")
+    assert report["status"] == "complete"
     assert report["arms"][0]["best"]["epoch"] == 0
     assert report["arms"][0]["final"]["epoch"] == 1
     assert report["arms"][1]["payload_trained"] is False
-    assert bool(report["errors"]) == mismatch
+    assert not report["errors"]
+
+    # One arm's otherwise valid run cannot be compared against a different cohort.
+    for index in (tmp_path / "runs/fixture/classification").rglob("index.json"):
+        payload = json.loads(index.read_text())
+        payload["coverage"]["recording"] = 11
+        payload["metrics"].update(classification_frames=11, classification_negatives=10)
+        index.write_text(json.dumps(payload))
+    mismatched = suite_report(path)
+    assert mismatched["status"] == "incomplete"
+    assert mismatched["errors"]
 
 
 def test_failed_fit_with_all_epoch_indices_is_incomplete(tmp_path):

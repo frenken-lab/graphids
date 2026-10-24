@@ -17,6 +17,8 @@ independent recording streams on one GPU.
   explicit representations, materialized views, and discovery/hypotheses.
 - **[Decisions](decisions/README.md)** — the ADR log. Permanent
   verdicts on the tools and patterns that got adopted or rejected.
+- **[Research code style](reference/research-code-style.md)** — readable scientific
+  logic, boundary validation, and behavior-focused tests.
 - **[API Reference](api/config.md)** — auto-generated from docstrings.
 
 ## Source

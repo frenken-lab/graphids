@@ -9,6 +9,11 @@ def raw_average_precision(scores, labels):
     Unknown labels (-1) are excluded. Single-class groups return None.
     No probability conversion is applied, even outside [0, 1].
     """
+    return frame_metrics(scores, labels).get("frame_ap")
+
+
+def frame_metrics(scores, labels, *, threshold=None):
+    """Exact tied-score AP/AUC; optional diagnostic confusion matrix."""
     scores, labels = np.asarray(scores, dtype=np.float64), np.asarray(labels)
     if scores.ndim != 1 or labels.shape != scores.shape:
         raise ValueError("scores and labels must be aligned vectors")
@@ -17,32 +22,18 @@ def raw_average_precision(scores, labels):
     if not np.isin(labels, (-1, 0, 1)).all():
         raise ValueError("labels must be -1, 0 or 1")
     known = labels >= 0
-    scores, labels = scores[known], labels[known]
-    if set(labels) != {0, 1}:
-        return None
-    order = np.argsort(-scores, kind="stable")
-    scores, positives = scores[order], labels[order] == 1
-    ends = np.r_[np.flatnonzero(scores[1:] != scores[:-1]), len(scores) - 1]
-    tp = np.cumsum(positives)[ends]
-    return float(np.sum(np.diff(np.r_[0, tp]) * tp / (ends + 1)) / positives.sum())
-
-
-def frame_metrics(scores, labels, *, threshold=None):
-    """Exact tied-score AP/AUC; optional diagnostic confusion matrix."""
-    scores, labels = np.asarray(scores, dtype=np.float64), np.asarray(labels)
-    ap = raw_average_precision(scores, labels)  # Also validates inputs.
-    known = labels >= 0
     scores, positive = scores[known], labels[known] == 1
     p, n = int(positive.sum()), int((~positive).sum())
     metrics = dict(frames=p + n, positives=p, negatives=n)
-    if ap is not None:
+    if p and n:
         order = np.argsort(-scores, kind="stable")
         ranked = scores[order]
         ends = np.r_[np.flatnonzero(ranked[1:] != ranked[:-1]), len(ranked) - 1]
         tp = np.r_[0, np.cumsum(positive[order])[ends]]
         fp = np.r_[0, ends + 1 - tp[1:]]
         auc = np.sum(np.diff(fp / n) * (tp[1:] + tp[:-1]) / (2 * p))
-        metrics.update(frame_ap=ap, frame_auroc=float(auc))
+        ap = np.sum(np.diff(tp) * tp[1:] / (ends + 1)) / p
+        metrics.update(frame_ap=float(ap), frame_auroc=float(auc))
     if threshold is not None:
         predicted = scores >= threshold
         tp, fp = int((predicted & positive).sum()), int((predicted & ~positive).sum())

@@ -75,6 +75,11 @@ loader remains a `DataLoader` for Lightning. CPU execution and the synchronous
 path remain available, and loader seeding uses a private RNG. Prefetched windows
 count toward the same GPU memory ceiling as model activations.
 
+The official scan computes the transformed time step once and shares it between
+cumulative decay and outgoing-state reconstruction, retaining both gradient paths.
+At epoch start, the model captures expected source-training recording counts;
+each optimizer step compares physical coverage against those counts.
+
 The model clips gradients to norm 1 before each AdamW update. Checkpoints may be
 saved only after complete epoch coverage, including source/config identities,
 optimizer state (Lightning), and Python/NumPy/PyTorch/CUDA RNG states. Resume via
@@ -158,6 +163,11 @@ it, persisting per-record progress and hashes. A failed audit raises and marks t
 per epoch, plus `index.json` recording physical row offsets, source identities,
 exact coverage and frame-level metrics. Incomplete validation is rejected. Thresholds and
 snapshot calibration are not silently transferred to the new model.
+
+Evaluation computes categorical per-byte NLL once for publishing ranks and reuses
+it in loss logging and anomaly scores. Loss eligibility remains normal-only,
+verified, and scored; anomaly scores use the existing payload-support mask.
+Sanity checks and non-publishing ranks retain the loss-only path.
 
 `graphids.core.evaluation.EventScores` owns packed score writing, coverage checks and
 exact epoch AP independently of the model and Lightning. The model supplies

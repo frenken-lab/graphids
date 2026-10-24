@@ -9,19 +9,14 @@ from __future__ import annotations
 import copy
 import subprocess
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from graphids.core.data.events.representation import CANEventRepresentationCfg
-from graphids.core.data.preprocessing.representations import (
-    RepresentationCfg,
-    parse_representation,
-    representation_kind,
-)
 from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
@@ -69,36 +64,12 @@ def load_experiment_yaml(
     )
 
 
-def _representation_payload(cfg: RepresentationCfg) -> dict[str, Any]:
-    if is_dataclass(cfg):
-        return asdict(cfg)
-    if hasattr(cfg, "model_dump"):
-        return cfg.model_dump(mode="json")
-    raise TypeError(f"unsupported representation config: {type(cfg)!r}")
-
-
-def _json_payload(value: Any) -> Any:
-    if is_dataclass(value):
-        value = asdict(value)
-    elif hasattr(value, "model_dump"):
-        value = value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return {str(k): _json_payload(v) for k, v in value.items()}
-    if isinstance(value, tuple | list):
-        return [_json_payload(v) for v in value]
-    return value
-
-
-def _find_data_representation_payload(value: Any) -> dict[str, Any] | None:
-    if hasattr(value, "model_dump") and not isinstance(value, Mapping):
-        value = value.model_dump(mode="json")
+def _find_data_representation_payload(value: Any) -> Any:
+    """Find representation metadata in primitive or nested class-path specs."""
     if not isinstance(value, Mapping):
         return None
     if "representation_cfg" in value:
-        payload = _json_payload(value["representation_cfg"])
-        if not isinstance(payload, dict):
-            raise TypeError("data representation_cfg must resolve to a mapping")
-        return payload
+        return value["representation_cfg"]
     for nested in value.values():
         found = _find_data_representation_payload(nested)
         if found is not None:
@@ -106,14 +77,12 @@ def _find_data_representation_payload(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _payload(cfg: Any) -> dict[str, Any]:
-    if hasattr(cfg, "model_dump"):
-        return cfg.model_dump(mode="json")
-    if is_dataclass(cfg):
-        return asdict(cfg)
-    if isinstance(cfg, dict):
-        return cfg
-    raise TypeError(f"unsupported run payload: {type(cfg)!r}")
+def _reject_loss_override(config: Mapping[str, Any]) -> None:
+    if config.get("loss_fn") is not None:
+        raise ValueError(
+            "loss_fn is retired: event_graph_mamba defines its own objectives; "
+            "use payload_weight and positive_weight in the model config"
+        )
 
 
 class _FormatDefaults(dict[str, str]):
@@ -175,9 +144,17 @@ class FitRunPayload(_StrictModel):
     trainer: dict[str, Any] = Field(default_factory=dict)
     callbacks: dict[str, Any] = Field(default_factory=dict)
     compile: dict[str, Any] | None = None
-    loss_fn: dict[str, Any] | None = None
     seed_everything: int | None = None
     ckpt_path: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_loss(cls, value):
+        if isinstance(value, Mapping):
+            _reject_loss_override(value)
+            # Read older resolved runs whose unused loss_fn was serialized as null.
+            return {key: item for key, item in value.items() if key != "loss_fn"}
+        return value
 
     @model_validator(mode="after")
     def validate_components(self):
@@ -240,7 +217,7 @@ class RunConfig(_StrictModel):
     seed: int = 42
     plan_id: str | None = None
     git_sha: str = "unknown"
-    representation_cfg: RepresentationCfg = Field(
+    representation_cfg: CANEventRepresentationCfg = Field(
         default_factory=CANEventRepresentationCfg
     )
     payload: RunPayload = Field(default_factory=FitRunPayload)
@@ -269,7 +246,7 @@ class RunConfig(_StrictModel):
             tags["graphids.seed"] = str(self.seed)
         if self.plan_id is not None:
             tags["graphids.plan_id"] = self.plan_id
-        tags["graphids.representation"] = representation_kind(self.representation_cfg)
+        tags["graphids.representation"] = self.representation_cfg.kind
         return tags
 
     def mlflow_hparams(self) -> dict[str, Any]:
@@ -280,11 +257,9 @@ class RunConfig(_StrictModel):
             "graphids.plan_id": self.plan_id or "",
             "graphids.git_sha": self.git_sha,
             "graphids.run_dir": str(self.outputs.run_dir),
-            "graphids.representation": representation_kind(self.representation_cfg),
-            "graphids.representation_cfg": _representation_payload(
-                self.representation_cfg
-            ),
-            "graphids.payload": _payload(self.payload),
+            "graphids.representation": self.representation_cfg.kind,
+            "graphids.representation_cfg": asdict(self.representation_cfg),
+            "graphids.payload": self.payload.model_dump(mode="json"),
             **{
                 f"graphids.resource.{k}": v
                 for k, v in self.resources.model_dump(mode="json").items()
@@ -301,8 +276,8 @@ class RunConfig(_StrictModel):
             git_sha=self.git_sha,
             run_dir=str(self.outputs.run_dir),
             config={
-                "representation_cfg": _representation_payload(self.representation_cfg),
-                "payload": _payload(self.payload),
+                "representation_cfg": asdict(self.representation_cfg),
+                "payload": self.payload.model_dump(mode="json"),
                 "resources": self.resources.model_dump(mode="json"),
             },
             outputs={
@@ -329,12 +304,17 @@ class ExperimentConfig(_StrictModel):
     seed: int = 42
     git_sha: str = "unknown"
     plan_id: str | None = None
-    representation_cfg: RepresentationCfg = Field(
+    representation_cfg: CANEventRepresentationCfg = Field(
         default_factory=CANEventRepresentationCfg
     )
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     stage: Stage = "fit"
+
+    @model_validator(mode="after")
+    def reject_legacy_loss(self):
+        _reject_loss_override(self.config)
+        return self
 
     def _run_dir(self, name: str, *, output_suffix: str | None = None) -> Path:
         from graphids.paths import trial_dir
@@ -372,16 +352,15 @@ class ExperimentConfig(_StrictModel):
                 "stage": stage,
             },
         )
-        payload: RunPayload
+        _reject_loss_override(cfg)
         data_representation = _find_data_representation_payload(cfg.get("data", {}))
         if data_representation is not None:
-            run_representation = _json_payload(
-                _representation_payload(self.representation_cfg)
-            )
-            resolved_data_representation = _json_payload(
-                _representation_payload(parse_representation(data_representation))
-            )
-            if resolved_data_representation != run_representation:
+            if (
+                TypeAdapter(CANEventRepresentationCfg).validate_python(
+                    data_representation
+                )
+                != self.representation_cfg
+            ):
                 raise ValueError(
                     "fit/test data.source.representation_cfg must match top-level "
                     "representation_cfg so run metadata and materialized data cannot drift"
@@ -393,7 +372,6 @@ class ExperimentConfig(_StrictModel):
                 "trainer": cfg.get("trainer", {}),
                 "callbacks": cfg.get("callbacks", {}),
                 "compile": cfg.get("compile"),
-                "loss_fn": cfg.get("loss_fn"),
                 "seed_everything": cfg.get("seed_everything", self.seed),
                 "ckpt_path": cfg.get("ckpt_path"),
             }

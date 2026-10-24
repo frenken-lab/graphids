@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,21 +18,12 @@ from graphids.exp.journal import (
     write_manifest,
 )
 from graphids.exp.runtime import (
-    _compile_model_if_requested as _compile_model_if_requested,
-)
-from graphids.exp.runtime import (
     _scalar_metrics as _scalar_metrics,
-)
-from graphids.exp.runtime import (
-    build_component as build_component,
 )
 from graphids.exp.runtime import (
     build_model,
     seed_run,
     trainer_components,
-)
-from graphids.exp.runtime import (
-    resolve_spec as resolve_spec,
 )
 
 
@@ -47,16 +38,6 @@ class RunSummary:
     last_event: str | None = None
     error: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-def _jsonish(obj: Any) -> dict[str, Any]:
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump(mode="json")
-    if is_dataclass(obj):
-        return asdict(obj)
-    if isinstance(obj, Mapping):
-        return dict(obj)
-    return {"value": repr(obj)}
 
 
 def _tracking_mode() -> str:
@@ -89,13 +70,9 @@ def _build_lightning_run(
 ) -> dict[str, Any]:
     import lightning.pytorch as pl
 
-    if "data" not in cfg or "model" not in cfg:
-        raise ValueError(f"{stage} requires data and model config blocks")
-
     seed_run(cfg)
     data = runtime.build_component(cfg["data"])
-    if hasattr(data, "setup"):
-        data.setup(None)
+    data.setup(None)
     model = build_model(cfg, data)
     trainer_kwargs = trainer_components(cfg)
     if os.environ.get("GRAPHIDS_RUN_DIR"):
@@ -143,31 +120,20 @@ def _build_lightning_run(
     if ray:
         trainer = prepare_trainer(trainer)
 
+    ckpt_path = cfg.get("ckpt_path") or None
     if stage == "fit":
-        trainer.fit(model, datamodule=data, ckpt_path=cfg.get("ckpt_path") or None)
-        metrics = _scalar_metrics(trainer.callback_metrics)
-        if logger is not None and metrics:
-            logger.log_metrics(metrics, step=trainer.global_step)
-        return {
-            "stage": "fit",
-            "trainer": trainer.__class__.__name__,
-            "metrics": metrics,
-        }
-
-    if stage == "test":
-        ckpt_path = cfg.get("ckpt_path") or None
+        trainer.fit(model, datamodule=data, ckpt_path=ckpt_path)
+    elif stage == "test":
         trainer.test(model, datamodule=data, ckpt_path=ckpt_path)
-        metrics = _scalar_metrics(trainer.callback_metrics)
-        if logger is not None and metrics:
-            logger.log_metrics(metrics, step=trainer.global_step)
-        return {
-            "stage": "test",
-            "trainer": trainer.__class__.__name__,
-            "ckpt_path": ckpt_path,
-            "metrics": metrics,
-        }
-
-    raise ValueError(f"unknown stage: {stage!r}")
+    else:
+        raise ValueError(f"unknown stage: {stage!r}")
+    metrics = _scalar_metrics(trainer.callback_metrics)
+    if logger is not None and metrics:
+        logger.log_metrics(metrics, step=trainer.global_step)
+    result = {"stage": stage, "trainer": trainer.__class__.__name__, "metrics": metrics}
+    if stage == "test":
+        result["ckpt_path"] = ckpt_path
+    return result
 
 
 def _worker_loop(config: dict[str, Any]) -> None:
@@ -214,7 +180,7 @@ def _worker_loop(config: dict[str, Any]) -> None:
             logger.experiment.set_terminated(logger.run_id, status="FINISHED")
         elif mode == "offline" and writer:
             write_ingest_payload(
-                run, status="FINISHED", metrics=metrics, result=_jsonish(result)
+                run, status="FINISHED", metrics=metrics, result=dict(result)
             )
 
         if writer:
@@ -224,7 +190,7 @@ def _worker_loop(config: dict[str, Any]) -> None:
                     status="finished",
                     stage=run.stage,
                     message="run_finished",
-                    details=_jsonish(result),
+                    details=dict(result),
                 ),
                 name=run.outputs.events_name,
             )
@@ -345,8 +311,8 @@ def launch_run(run: RunConfig, *, address: str | None = None) -> RunSummary:
             stage=run.stage,
             message="ray_result",
             details={
-                "path": str(getattr(result, "path", "") or ""),
-                "metrics": _jsonish(getattr(result, "metrics", {}) or {}),
+                "path": str(result.path or ""),
+                "metrics": dict(result.metrics),
             },
         ),
         name=run.outputs.events_name,

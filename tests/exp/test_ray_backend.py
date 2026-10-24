@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     import ray
     import ray.train
     import ray.train.torch
 
-    from graphids.exp import ray_backend, runtime
+    from graphids.exp import ray_backend
     from graphids.exp.config import (
         FitRunPayload,
         OutputConfig,
@@ -32,23 +34,33 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
             captured["trainer_kwargs"] = kwargs
 
         def fit(self):
-            return type("FakeResult", (), {"path": "/tmp/ray-result", "metrics": {"val_loss": 1.25}})()
+            return type(
+                "FakeResult",
+                (),
+                {"path": "/tmp/ray-result", "metrics": {"val_loss": 1.25}},
+            )()
 
     monkeypatch.setattr(ray, "is_initialized", lambda: False)
-    monkeypatch.setattr(ray, "init", lambda **kwargs: captured.setdefault("ray_init", kwargs))
+    monkeypatch.setattr(
+        ray, "init", lambda **kwargs: captured.setdefault("ray_init", kwargs)
+    )
     monkeypatch.setattr(ray.train, "ScalingConfig", FakeScalingConfig)
     monkeypatch.setattr(ray.train, "RunConfig", FakeRunConfig)
     monkeypatch.setattr(ray.train.torch, "TorchTrainer", FakeTorchTrainer)
     monkeypatch.setattr(
         ray_backend,
         "summarize_run",
-        lambda run_dir: RunSummary(run_dir=str(run_dir), status="finished", stage="fit", name="ray-demo"),
+        lambda run_dir: RunSummary(
+            run_dir=str(run_dir), status="finished", stage="fit", name="ray-demo"
+        ),
     )
 
     run = RunConfig(
         name="ray-demo",
         stage="fit",
-        resources=ResourceConfig(accelerator="gpu", cpus_per_worker=4, gpus_per_worker=1.0),
+        resources=ResourceConfig(
+            accelerator="gpu", cpus_per_worker=4, gpus_per_worker=1.0
+        ),
         outputs=OutputConfig(run_dir=tmp_path / "ray-demo"),
         payload=FitRunPayload(
             trainer={"devices": 2},
@@ -89,36 +101,72 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     assert captured["trainer_kwargs"]["train_loop_config"]["run"]["name"] == "ray-demo"
 
 
-def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
+@pytest.mark.parametrize(
+    "ray_enabled, stage, with_logger",
+    [
+        (False, "fit", True),
+        (False, "test", False),
+        (True, "fit", False),
+        (True, "test", True),
+    ],
+)
+def test_build_lightning_run_wires_components_compile_logger_and_ray(
+    monkeypatch, ray_enabled, stage, with_logger
+):
+    """Pairwise coverage of stage, logger, and Ray preserves runtime wiring."""
     import sys
     import types
 
+    from graphids._mlflow import MLflowSystemMetricsCallback
     from graphids.exp import ray_backend, runtime
 
-    captured: dict[str, object] = {}
+    captured = {}
 
     class DummyData:
         def setup(self, stage):
             captured["setup_stage"] = stage
 
     class DummyModel:
-        pass
+        def prepare_from_datamodule(self, data):
+            captured["prepared_data"] = data
+
+        def compile(self, **kwargs):
+            captured["compile_kwargs"] = kwargs
 
     class DummyTrainer:
         def __init__(self, **kwargs):
             captured["trainer_kwargs"] = kwargs
-            self.callback_metrics = {}
-            self.global_step = 0
+            self.callback_metrics = {"quality": 0.75}
+            self.global_step = 3
 
         def fit(self, model, datamodule, ckpt_path=None):
-            captured["fit"] = (model, datamodule)
+            captured["run"] = ("fit", model, datamodule, ckpt_path)
 
-    class DummyLightning:
-        Trainer = DummyTrainer
+        def test(self, model, datamodule, ckpt_path=None):
+            captured["run"] = ("test", model, datamodule, ckpt_path)
 
-        @staticmethod
-        def seed_everything(seed, workers):
-            captured["seed"] = seed
+    data, model = DummyData(), DummyModel()
+    logger = (
+        types.SimpleNamespace(
+            log_metrics=lambda metrics, step: captured.update(logged=(metrics, step))
+        )
+        if with_logger
+        else None
+    )
+    monkeypatch.setattr(
+        runtime,
+        "build_component",
+        lambda spec: data if spec["type"] == "dummy_data" else model,
+    )
+    lightning = types.ModuleType("lightning")
+    pytorch = types.ModuleType("lightning.pytorch")
+    pytorch.Trainer = DummyTrainer
+    pytorch.seed_everything = lambda seed, workers: captured.update(
+        seed=seed, workers=workers
+    )
+    lightning.pytorch = pytorch
+    monkeypatch.setitem(sys.modules, "lightning", lightning)
+    monkeypatch.setitem(sys.modules, "lightning.pytorch", pytorch)
 
     class FakeRayDDPStrategy:
         pass
@@ -129,115 +177,62 @@ def test_build_lightning_run_configures_lightning_for_ray(monkeypatch):
     class FakeRayTrainReportCallback:
         pass
 
-    lightning_pkg = types.ModuleType("lightning")
-    lightning_pkg.__path__ = []
-    lightning_pkg.pytorch = DummyLightning
-    ray_lightning_mod = types.ModuleType("ray.train.lightning")
-    ray_lightning_mod.RayDDPStrategy = FakeRayDDPStrategy
-    ray_lightning_mod.RayLightningEnvironment = FakeRayLightningEnvironment
-    ray_lightning_mod.RayTrainReportCallback = FakeRayTrainReportCallback
-    ray_lightning_mod.prepare_trainer = lambda trainer: captured.setdefault("prepared", trainer)
+    if ray_enabled:
+        import ray.train
 
-    monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
-    monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setitem(sys.modules, "ray.train.lightning", ray_lightning_mod)
-    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
-
-    def resolve_spec(spec):
-        if isinstance(spec, dict) and spec.get("type") == "dummy_model":
-            return DummyModel()
-        return spec
-
-    monkeypatch.setattr(runtime, "resolve_spec", resolve_spec)
+        ray_lightning = types.ModuleType("ray.train.lightning")
+        ray_lightning.RayDDPStrategy = FakeRayDDPStrategy
+        ray_lightning.RayLightningEnvironment = FakeRayLightningEnvironment
+        ray_lightning.RayTrainReportCallback = FakeRayTrainReportCallback
+        ray_lightning.prepare_trainer = lambda trainer: captured.setdefault(
+            "prepared_trainer", trainer
+        )
+        monkeypatch.setitem(sys.modules, "ray.train.lightning", ray_lightning)
+        monkeypatch.setattr(
+            ray.train,
+            "get_context",
+            lambda: types.SimpleNamespace(get_world_rank=lambda: 0),
+        )
 
     result = ray_backend._build_lightning_run(
-        "fit",
+        stage,
         {
             "data": {"type": "dummy_data"},
             "model": {"type": "dummy_model"},
             "trainer": {"max_epochs": 1},
             "seed_everything": 7,
+            "ckpt_path": "resume.ckpt",
+            "compile": {"backend": "eager", "fullgraph": False},
         },
-        logger=None,
-        ray=True,
+        logger=logger,
+        ray=ray_enabled,
     )
-
-    assert result == {"stage": "fit", "trainer": "DummyTrainer", "metrics": {}}
+    expected = {"stage": stage, "trainer": "DummyTrainer", "metrics": {"quality": 0.75}}
+    if stage == "test":
+        expected["ckpt_path"] = "resume.ckpt"
+    assert result == expected
+    assert captured["setup_stage"] is None
+    assert captured["prepared_data"] is data
+    assert captured["run"] == (stage, model, data, "resume.ckpt")
+    if with_logger:
+        assert captured["logged"] == ({"quality": 0.75}, 3)
+    else:
+        assert "logged" not in captured
+    assert captured["seed"] == 7 and captured["workers"] is True
+    assert captured["compile_kwargs"] == {"backend": "eager", "fullgraph": False}
     kwargs = captured["trainer_kwargs"]
-    assert kwargs["accelerator"] == "auto"
-    assert kwargs["devices"] == "auto"
-    assert isinstance(kwargs["strategy"], FakeRayDDPStrategy)
-    assert any(isinstance(plugin, FakeRayLightningEnvironment) for plugin in kwargs["plugins"])
-    assert any(isinstance(callback, FakeRayTrainReportCallback) for callback in kwargs["callbacks"])
-    assert captured["prepared"] is not None
-
-
-def test_build_lightning_run_uses_lightning_module_compile(monkeypatch):
-    import sys
-    import types
-
-    from graphids.exp import ray_backend, runtime
-
-    captured: dict[str, object] = {}
-
-    class DummyData:
-        def setup(self, stage):
-            captured["setup_stage"] = stage
-
-    class DummyModel:
-        def compile(self, **kwargs):
-            captured["compile_kwargs"] = kwargs
-
-    class DummyTrainer:
-        def __init__(self, **kwargs):
-            captured["trainer_kwargs"] = kwargs
-            self.callback_metrics = {}
-            self.global_step = 0
-
-        def fit(self, model, datamodule, ckpt_path=None):
-            captured["fit"] = (model, datamodule)
-
-    class DummyLightning:
-        Trainer = DummyTrainer
-
-        @staticmethod
-        def seed_everything(seed, workers):
-            del seed, workers
-
-    lightning_pkg = types.ModuleType("lightning")
-    lightning_pkg.__path__ = []
-    lightning_pkg.pytorch = DummyLightning
-    monkeypatch.setitem(sys.modules, "lightning", lightning_pkg)
-    monkeypatch.setitem(sys.modules, "lightning.pytorch", DummyLightning)
-    monkeypatch.setattr(runtime, "build_component", lambda spec: DummyData())
-
-    def resolve_spec(spec):
-        if isinstance(spec, dict) and spec.get("type") == "dummy_model":
-            return DummyModel()
-        return spec
-
-    monkeypatch.setattr(runtime, "resolve_spec", resolve_spec)
-
-    ray_backend._build_lightning_run(
-        "fit",
-        {
-            "data": {"type": "dummy_data"},
-            "model": {"type": "dummy_model"},
-            "compile": {
-                "backend": "inductor",
-                "mode": "reduce-overhead",
-                "fullgraph": False,
-                "dynamic": False,
-            },
-        },
-        logger=None,
-        ray=False,
+    assert kwargs["logger"] is (logger if with_logger else False)
+    assert (
+        any(isinstance(cb, MLflowSystemMetricsCallback) for cb in kwargs["callbacks"])
+        is with_logger
     )
-
-    assert captured["compile_kwargs"] == {
-        "backend": "inductor",
-        "mode": "reduce-overhead",
-        "fullgraph": False,
-        "dynamic": False,
-    }
-    assert captured["fit"][0].__class__.__name__ == "DummyModel"
+    if ray_enabled:
+        assert kwargs["accelerator"] == kwargs["devices"] == "auto"
+        assert isinstance(kwargs["strategy"], FakeRayDDPStrategy)
+        assert any(
+            isinstance(p, FakeRayLightningEnvironment) for p in kwargs["plugins"]
+        )
+        assert any(
+            isinstance(cb, FakeRayTrainReportCallback) for cb in kwargs["callbacks"]
+        )
+        assert captured["prepared_trainer"] is not None

@@ -1,13 +1,16 @@
-from graphids.core.data.preprocessing.representations import representation_kind
 from graphids.exp.config import ExperimentConfig
 
 
 def test_defaults_to_event_representation():
     cfg = ExperimentConfig(experiment_name="demo", dataset="toy")
     run = cfg.build_run(name="demo-run", stage="fit")
-    assert representation_kind(cfg.representation_cfg) == "can_event"
-    assert representation_kind(run.representation_cfg) == "can_event"
+    assert cfg.representation_cfg.kind == "can_event"
+    assert run.representation_cfg.kind == "can_event"
     assert run.mlflow_tags()["graphids.phase"] == "fit"
+    assert run.mlflow_hparams()["graphids.representation_cfg"] == {
+        "kind": "can_event",
+        "schema_version": 1,
+    }
 
 
 def test_from_yaml_resolves_git_sha(monkeypatch, tmp_path):

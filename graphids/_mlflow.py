@@ -20,10 +20,27 @@ from typing import Any
 
 import lightning.pytorch as pl
 import mlflow
+import torch
 from lightning.pytorch.loggers import MLFlowLogger
 from mlflow.tracking import MlflowClient
 
 _MIB_PER_GIB = 1024.0
+
+# Exact source keys for CPU metrics; suffix matches for each GPU's histories.
+# source, output name, unit divisor, reductions, GPU family
+_SYSTEM_METRIC_FAMILIES = (
+    ("system/cpu_utilization_percentage", "cpu_percent", 1.0, ("mean", "max"), False),
+    (
+        "system/system_memory_usage_megabytes",
+        "rss_gib",
+        _MIB_PER_GIB,
+        ("mean", "max"),
+        False,
+    ),
+    ("_utilization_percentage", "gpu_util_percent", 1.0, ("mean", "max"), True),
+    ("_memory_usage_megabytes", "gpu_mem_gib", _MIB_PER_GIB, ("max",), True),
+    ("_memory_usage_percentage", "gpu_mem_percent", 1.0, ("max",), True),
+)
 
 
 def configure_tracking_uri() -> None:
@@ -116,8 +133,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
             "phase": name,
             "started_at": datetime.now(UTC).isoformat(),
             "start_clock": time.monotonic(),
-            "scored_events": 0,
-            "scored_seconds": 0.0,
+            "totals": {},
             "gpu_samples": [],
         }
         self._sample_gpu()
@@ -125,15 +141,25 @@ class MLflowSystemMetricsCallback(pl.Callback):
     def _batch_phase(self, batch: Any) -> None:
         if self._phase is None:
             return
-        groups = getattr(batch, "groups", [[batch]])
-        for group in groups:
-            for chunk in group:
-                mask = getattr(chunk, "scored", None)
-                if mask is not None:
-                    self._phase["scored_events"] += int(mask.sum().item())
-                    self._phase["scored_seconds"] += float(
-                        chunk.times[:, 1][mask].sum().item()
+        from graphids.core.data.events.data import EventTrainingWindow
+
+        groups = batch.groups if isinstance(batch, EventTrainingWindow) else [[batch]]
+        totals = self._phase["totals"]
+        with torch.no_grad():
+            for group in groups:
+                for chunk in group:
+                    mask = chunk.scored
+                    count = mask.sum()
+                    # Boolean indexing would synchronize CUDA to size its result.
+                    seconds = (
+                        chunk.times[:, 1].masked_fill(~mask, 0).sum(dtype=torch.float64)
                     )
+                    device = mask.device
+                    if device in totals:
+                        totals[device][0].add_(count)
+                        totals[device][1].add_(seconds)
+                    else:
+                        totals[device] = (count, seconds)
         self._sample_gpu()
 
     def _end_phase(self) -> None:
@@ -141,6 +167,11 @@ class MLflowSystemMetricsCallback(pl.Callback):
             return
         self._sample_gpu()
         phase = self._phase
+        # Flush device work before recording wall time, once per phase/device.
+        scored_events = sum(int(count.cpu()) for count, _ in phase["totals"].values())
+        scored_seconds = sum(
+            (float(seconds.cpu()) for _, seconds in phase["totals"].values()), 0.0
+        )
         elapsed = time.monotonic() - phase["start_clock"]
         samples = phase["gpu_samples"]
         row = {
@@ -148,9 +179,9 @@ class MLflowSystemMetricsCallback(pl.Callback):
             "started_at": phase["started_at"],
             "ended_at": datetime.now(UTC).isoformat(),
             "wall_seconds": elapsed,
-            "scored_events": phase["scored_events"],
-            "events_per_second": phase["scored_events"] / elapsed if elapsed else None,
-            "scored_seconds": phase["scored_seconds"],
+            "scored_events": scored_events,
+            "events_per_second": scored_events / elapsed if elapsed else None,
+            "scored_seconds": scored_seconds,
             "gpu_sample_count": len(samples),
             "gpu_utilization_mean": sum(s[0] for s in samples) / len(samples)
             if samples
@@ -160,8 +191,8 @@ class MLflowSystemMetricsCallback(pl.Callback):
         }
         self.phase_summaries.append(row)
         self._phase = None
-        logger = getattr(self._trainer, "logger", None)
-        if logger and hasattr(logger, "log_metrics"):
+        logger = self._trainer.logger if self._trainer is not None else None
+        if logger is not None:
             logger.log_metrics(
                 {
                     f"phase/{row['phase']}/{key}": value
@@ -179,7 +210,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
                     }
                     and value is not None
                 },
-                step=getattr(self._trainer, "global_step", 0),
+                step=self._trainer.global_step,
             )
         if self.phase_output:
             self.phase_output.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +249,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
     def on_test_batch_start(
         self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
     ) -> None:
-        name = list(getattr(trainer.datamodule, "test_data", {}))
+        name = list(trainer.datamodule.test_data)
         if dataloader_idx < len(name):
             desired = name[dataloader_idx]
             if self._phase is None or self._phase["phase"] != desired:
@@ -241,7 +272,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
             self.phase_output = root / ".graphids" / "phase_metrics.json"
         if self._monitor is not None:
             return
-        logger = getattr(trainer, "logger", None)
+        logger = trainer.logger
         run_id = getattr(logger, "run_id", None)
         if not run_id:
             return
@@ -303,6 +334,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
         pl_module: pl.LightningModule,
         exception: BaseException,
     ) -> None:
+        self._phase = None
         self._stop()
 
 
@@ -347,10 +379,7 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
         self._previous_tracking_uri: str | None = None
 
     def _default_tracking_dir(self, trainer: pl.Trainer) -> Path:
-        root = getattr(trainer, "default_root_dir", None)
-        if root is None:
-            root = Path.cwd()
-        return Path(root) / ".graphids" / "system_metrics_mlflow"
+        return Path(trainer.default_root_dir) / ".graphids" / "system_metrics_mlflow"
 
     def _resolve_tracking_uri(self, trainer: pl.Trainer) -> str:
         if self.tracking_uri:
@@ -417,11 +446,7 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
             history = client.get_metric_history(run_id, key)
         except Exception:  # noqa: BLE001 - missing optional metric histories are expected
             return values
-        for metric in history:
-            value = getattr(metric, "value", None)
-            if isinstance(value, int | float):
-                values.append(float(value))
-        return values
+        return [float(metric.value) for metric in history]
 
     @staticmethod
     def _mean(values: list[float]) -> float:
@@ -431,10 +456,9 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
     def _latest_metric_keys(client: Any, run_id: str) -> set[str]:
         try:
             run = client.get_run(run_id)
-        except Exception:  # noqa: BLE001 - tests may mock only history lookups
+        except Exception:  # noqa: BLE001 - telemetry service may be unavailable
             return set()
-        metrics = getattr(getattr(run, "data", None), "metrics", None)
-        return {str(key) for key in dict(metrics or {})}
+        return set(run.data.metrics)
 
     def _summarize(self) -> dict[str, float]:
         if self._run_id is None or self._resolved_tracking_uri is None:
@@ -444,76 +468,36 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
         run_id = self._run_id
         keys = self._latest_metric_keys(client, run_id)
         keys.update(
-            {
-                "system/cpu_utilization_percentage",
-                "system/system_memory_usage_megabytes",
-                "system/gpu_0_utilization_percentage",
-                "system/gpu_0_memory_usage_megabytes",
-                "system/gpu_0_memory_usage_percentage",
-            }
+            f"system/gpu_0{source}"
+            for source, _, _, _, gpu in _SYSTEM_METRIC_FAMILIES
+            if gpu
         )
-
         metrics: dict[str, float] = {}
         sample_counts: list[int] = []
-
-        cpu_values = self._metric_history_values(
-            client, run_id, "system/cpu_utilization_percentage"
-        )
-        if cpu_values:
-            sample_counts.append(len(cpu_values))
-            metrics[f"{self.prefix}/cpu_percent_mean"] = self._mean(cpu_values)
-            metrics[f"{self.prefix}/cpu_percent_max"] = max(cpu_values)
-
-        memory_values = self._metric_history_values(
-            client, run_id, "system/system_memory_usage_megabytes"
-        )
-        if memory_values:
-            sample_counts.append(len(memory_values))
-            gib_values = [value / _MIB_PER_GIB for value in memory_values]
-            metrics[f"{self.prefix}/rss_gib_mean"] = self._mean(gib_values)
-            metrics[f"{self.prefix}/rss_gib_max"] = max(gib_values)
-
-        if self.include_gpu:
-            gpu_util_values: list[float] = []
-            gpu_mem_gib_values: list[float] = []
-            gpu_mem_percent_values: list[float] = []
-            for key in sorted(keys):
-                if key.startswith("system/gpu_") and key.endswith(
-                    "_utilization_percentage"
-                ):
-                    values = self._metric_history_values(client, run_id, key)
-                    if values:
-                        sample_counts.append(len(values))
-                        gpu_util_values.extend(values)
-                elif key.startswith("system/gpu_") and key.endswith(
-                    "_memory_usage_megabytes"
-                ):
-                    values = self._metric_history_values(client, run_id, key)
-                    if values:
-                        sample_counts.append(len(values))
-                        gpu_mem_gib_values.extend(
-                            value / _MIB_PER_GIB for value in values
-                        )
-                elif key.startswith("system/gpu_") and key.endswith(
-                    "_memory_usage_percentage"
-                ):
-                    values = self._metric_history_values(client, run_id, key)
-                    if values:
-                        sample_counts.append(len(values))
-                        gpu_mem_percent_values.extend(values)
-
-            if gpu_util_values:
-                metrics[f"{self.prefix}/gpu_util_percent_mean"] = self._mean(
-                    gpu_util_values
+        reducers = {"mean": self._mean, "max": max}
+        for source, name, divisor, reductions, gpu in _SYSTEM_METRIC_FAMILIES:
+            if gpu and not self.include_gpu:
+                continue
+            sources = (
+                sorted(
+                    key
+                    for key in keys
+                    if key.startswith("system/gpu_") and key.endswith(source)
                 )
-                metrics[f"{self.prefix}/gpu_util_percent_max"] = max(gpu_util_values)
-            if gpu_mem_gib_values:
-                metrics[f"{self.prefix}/gpu_mem_gib_max"] = max(gpu_mem_gib_values)
-            if gpu_mem_percent_values:
-                metrics[f"{self.prefix}/gpu_mem_percent_max"] = max(
-                    gpu_mem_percent_values
-                )
-
+                if gpu
+                else (source,)
+            )
+            values = []
+            for key in sources:
+                history = self._metric_history_values(client, run_id, key)
+                if history:
+                    sample_counts.append(len(history))
+                    values.extend(value / divisor for value in history)
+            if values:
+                for reduction in reductions:
+                    metrics[f"{self.prefix}/{name}_{reduction}"] = reducers[reduction](
+                        values
+                    )
         if sample_counts:
             metrics[f"{self.prefix}/samples"] = float(max(sample_counts))
         return metrics

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
-from inspect import signature
+from numbers import Real
 from typing import Any
+
+from pydantic import BaseModel
 
 
 def resolve_spec(spec: Any) -> Any:
     """Resolve a nested primitive/class-path spec without calling ``build()``."""
-    if hasattr(spec, "model_dump") and not isinstance(spec, Mapping):
+    if isinstance(spec, BaseModel):
         spec = spec.model_dump(mode="json")
     if isinstance(spec, list):
         return [resolve_spec(item) for item in spec]
@@ -37,41 +39,29 @@ def resolve_spec(spec: Any) -> Any:
     return {k: resolve_spec(v) for k, v in spec.items()}
 
 
-def build_component(spec: Any, **build_kwargs: Any) -> Any:
-    """Resolve a spec and call ``build()`` when the resolved object supports it."""
+def build_component(spec: Any) -> Any:
+    """Build a config primitive, or return an instantiated class-path object.
+
+    ``build`` is the optional construction hook at this config boundary.
+    Errors from the builder propagate unchanged.
+    """
     resolved = resolve_spec(spec)
     builder = getattr(resolved, "build", None)
-    if callable(builder):
-        if build_kwargs:
-            params = signature(builder).parameters
-            filtered = {k: v for k, v in build_kwargs.items() if k in params}
-            try:
-                return builder(**filtered)
-            except TypeError:
-                pass
-        return builder()
-    return resolved
+    return builder() if builder is not None else resolved
 
 
 def _scalar_metrics(metrics: Mapping[str, Any]) -> dict[str, float]:
-    out: dict[str, float] = {}
+    """Extract numeric scalars from Lightning metrics, ignoring vector metrics."""
+    from torch import Tensor
+
+    out = {}
     for key, value in metrics.items():
-        item = value
-        detach = getattr(item, "detach", None)
-        if callable(detach):
-            item = detach()
-        cpu = getattr(item, "cpu", None)
-        if callable(cpu):
-            item = cpu()
-        scalar = getattr(item, "item", None)
-        if callable(scalar):
-            try:
-                out[str(key)] = float(scalar())
+        if isinstance(value, Tensor):
+            if value.numel() != 1:
                 continue
-            except (TypeError, ValueError, RuntimeError):
-                continue
-        if isinstance(item, int | float):
-            out[str(key)] = float(item)
+            value = value.detach().cpu().item()
+        if isinstance(value, Real):
+            out[str(key)] = float(value)
     return out
 
 
@@ -88,12 +78,7 @@ def _compile_model_if_requested(model: Any, cfg: Mapping[str, Any]) -> None:
         compile_kwargs = dict(resolved)
         if compile_kwargs.pop("enabled", True) is False:
             return
-    compile_method = getattr(model, "compile", None)
-    if not callable(compile_method):
-        raise TypeError(
-            f"{type(model).__name__} does not support LightningModule.compile()"
-        )
-    compile_method(**compile_kwargs)
+    model.compile(**compile_kwargs)
 
 
 def seed_run(cfg: Mapping[str, Any]) -> None:
@@ -105,20 +90,11 @@ def seed_run(cfg: Mapping[str, Any]) -> None:
 
 
 def build_model(cfg: Mapping[str, Any], data: Any) -> Any:
-    loss_fn = (
-        build_component(cfg["loss_fn"]) if cfg.get("loss_fn") is not None else None
-    )
-    model_spec = resolve_spec(cfg["model"])
-    if hasattr(model_spec, "build"):
-        model = (
-            model_spec.build(loss_fn=loss_fn)
-            if loss_fn is not None
-            else model_spec.build()
-        )
-    else:
-        model = model_spec
-    if hasattr(model, "prepare_from_datamodule"):
-        model.prepare_from_datamodule(data)
+    model = build_component(cfg["model"])
+    # Custom class-path models may omit this event-data preparation hook.
+    prepare = getattr(model, "prepare_from_datamodule", None)
+    if prepare is not None:
+        prepare(data)
     _compile_model_if_requested(model, cfg)
     return model
 

@@ -25,84 +25,93 @@ def scores():
     )
 
 
-@pytest.mark.parametrize("lengths", [(6,), (1, 2, 3), (1,) * 6])
 def test_packed_scores_preserve_rows_and_metrics_ignore_chunk_boundaries(
-    tmp_path, scores, lengths
+    tmp_path, scores
 ):
     """Execution chunks must not change scores, AP eligibility or physical rows."""
-    writer = EventScores(tmp_path)
-    start = 0
-    for length in lengths:
-        writer.write(
-            scores[start : start + length],
-            recording="capture",
-            source_digest="source-hash",
-            row_start=start,
-        )
-        start += length
-    metrics = writer.finish({"capture": len(scores)})
-    assert {
-        key: metrics[key] for key in ("classification_frame_ap", "payload_frame_ap")
-    } == {
-        "classification_frame_ap": raw_average_precision(scores[:, 3], scores[:, 2]),
-        "payload_frame_ap": raw_average_precision(
-            scores[scores[:, 5] == 1, 4], scores[scores[:, 5] == 1, 2]
-        ),
-    }
-    restored = []
-    for chunk, values in iter_score_chunks(tmp_path):
-        assert chunk["source_digest"] == "source-hash"
-        assert chunk["recording"] == "capture"
-        assert chunk["row_start"] == sum(len(block) for block in restored)
-        restored.append(values)
-    np.testing.assert_array_equal(np.concatenate(restored), scores)
-    index = json.loads((tmp_path / "index.json").read_text())
-    assert index["metrics"] == metrics
-    assert index["coverage"] == {"capture": len(scores)}
-    assert index["columns"] == [
-        "timestamp",
-        "can_id",
-        "label",
-        "classification",
-        "payload_nll",
-        "payload_supported",
-    ]
-    assert index["schema_version"] == 2
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["index.json", "scores.bin"]
-    assert index["prediction_unit"] == "observed_frame"
-    assert index["by_recording"]["capture"] == metrics
-    assert metrics["classification_frame_auroc"] == pytest.approx(0.75)
-    assert [metrics[f"classification_{k}"] for k in ("tp", "fp", "fn", "tn")] == [
-        2,
-        1,
-        1,
-        1,
-    ]
-    assert metrics["classification_f1"] == pytest.approx(2 / 3)
+    summaries = []
+    for trial, lengths in enumerate(((6,), (1, 2, 3), (1,) * 6)):
+        directory = tmp_path / str(trial)
+        writer = EventScores(directory)
+        start = 0
+        for length in lengths:
+            writer.write(
+                scores[start : start + length],
+                recording="capture",
+                source_digest="source-hash",
+                row_start=start,
+            )
+            start += length
+        metrics = writer.finish({"capture": len(scores)})
+        summaries.append(metrics)
+        assert {
+            key: metrics[key] for key in ("classification_frame_ap", "payload_frame_ap")
+        } == {
+            "classification_frame_ap": raw_average_precision(
+                scores[:, 3], scores[:, 2]
+            ),
+            "payload_frame_ap": raw_average_precision(
+                scores[scores[:, 5] == 1, 4], scores[scores[:, 5] == 1, 2]
+            ),
+        }
+        restored = []
+        for chunk, values in iter_score_chunks(directory):
+            assert chunk["source_digest"] == "source-hash"
+            assert chunk["recording"] == "capture"
+            assert chunk["row_start"] == sum(len(block) for block in restored)
+            restored.append(values)
+        np.testing.assert_array_equal(np.concatenate(restored), scores)
+        index = json.loads((directory / "index.json").read_text())
+        assert index["metrics"] == metrics
+        assert index["coverage"] == {"capture": len(scores)}
+        assert index["columns"] == [
+            "timestamp",
+            "can_id",
+            "label",
+            "classification",
+            "payload_nll",
+            "payload_supported",
+        ]
+        assert index["schema_version"] == 2
+        assert sorted(p.name for p in directory.iterdir()) == [
+            "index.json",
+            "scores.bin",
+        ]
+        assert index["prediction_unit"] == "observed_frame"
+        assert index["by_recording"]["capture"] == metrics
+        assert metrics["classification_frame_auroc"] == pytest.approx(0.75)
+        assert [metrics[f"classification_{k}"] for k in ("tp", "fp", "fn", "tn")] == [
+            2,
+            1,
+            1,
+            1,
+        ]
+        assert metrics["classification_f1"] == pytest.approx(2 / 3)
+    assert summaries[0] == summaries[1] == summaries[2]
 
 
-@pytest.mark.parametrize("next_row", [0, 3])
-def test_duplicate_or_missing_rows_cannot_publish_results(tmp_path, scores, next_row):
+def test_duplicate_or_missing_rows_cannot_publish_results(tmp_path, scores):
     """A plausible total count cannot hide overlapping or omitted physical rows."""
-    writer = EventScores(tmp_path)
-    writer.write(scores[:2], recording="a", source_digest="hash", row_start=0)
-    with pytest.raises(ValueError, match="duplicate/missing"):
-        writer.write(
-            scores[2:4], recording="a", source_digest="hash", row_start=next_row
-        )
-    assert not (tmp_path / "index.json").exists()
+    for next_row in (0, 3):
+        directory = tmp_path / str(next_row)
+        writer = EventScores(directory)
+        writer.write(scores[:2], recording="a", source_digest="hash", row_start=0)
+        with pytest.raises(ValueError, match="duplicate/missing"):
+            writer.write(
+                scores[2:4], recording="a", source_digest="hash", row_start=next_row
+            )
+        assert not (directory / "index.json").exists()
 
 
-@pytest.mark.parametrize("expected", [{"a": 3}, {"a": 2, "b": 2}])
-def test_incomplete_recording_or_cohort_cannot_publish_results(
-    tmp_path, scores, expected
-):
+def test_incomplete_recording_or_cohort_cannot_publish_results(tmp_path, scores):
     """An index is evidence of complete cohort coverage, not a partial epoch."""
-    writer = EventScores(tmp_path)
-    writer.write(scores[:2], recording="a", source_digest="hash", row_start=0)
-    with pytest.raises(ValueError, match="incomplete"):
-        writer.finish(expected)
-    assert not (tmp_path / "index.json").exists()
+    for trial, expected in enumerate(({"a": 3}, {"a": 2, "b": 2})):
+        directory = tmp_path / str(trial)
+        writer = EventScores(directory)
+        writer.write(scores[:2], recording="a", source_digest="hash", row_start=0)
+        with pytest.raises(ValueError, match="incomplete"):
+            writer.finish(expected)
+        assert not (directory / "index.json").exists()
 
 
 def test_recordings_keep_independent_row_positions_and_single_class_metrics_are_omitted(
@@ -228,19 +237,3 @@ def test_bad_legacy_shard_cannot_replace_index_or_delete_evidence(tmp_path, scor
     assert json.loads((tmp_path / "index.json").read_text()) == original
     assert len(list(tmp_path.glob("*.npz"))) == 3
     assert not (tmp_path / "scores.bin").exists()
-
-
-def test_unknown_labels_and_no_predictions_do_not_invent_precision():
-    from graphids.core.metrics import frame_metrics
-
-    metrics = frame_metrics([0.1, 0.2, 1.0], [0, 1, -1], threshold=0.5)
-    assert metrics["frame_auroc"] == 1
-    assert metrics["recall"] == metrics["f1"] == 0
-    assert metrics["precision"] is None
-    assert metrics["frames"] == 2
-
-
-def test_auc_ties_receive_half_credit():
-    from graphids.core.metrics import frame_metrics
-
-    assert frame_metrics([0.5, 0.5], [0, 1])["frame_auroc"] == 0.5
