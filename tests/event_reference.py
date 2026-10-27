@@ -9,8 +9,8 @@ import math
 import torch
 from torch.nn import functional as F
 
-from graphids.core.models.event_graph_mamba import EventGraphMambaState
-from graphids.core.models.mamba_chunk import mamba_chunk
+from graphids.models.event_graph_mamba import EventGraphMambaState
+from graphids.models.mamba_chunk import mamba_chunk
 
 
 def serial_routing(batch, state):

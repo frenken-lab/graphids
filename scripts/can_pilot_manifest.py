@@ -219,7 +219,7 @@ def main():
         )
     )
     manifest = {"version": 1, "provenance_reviewed": True, "records": records}
-    from graphids.core.data.recordings import (
+    from graphids.data.recordings import (
         CANRecordingManifest,
         Recording,
     )

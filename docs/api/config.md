@@ -1,53 +1,28 @@
 # Config
 
-The current typed config surface is split between:
+Typed configuration follows module ownership:
 
-- `graphids.exp.config` for run and
-  experiment configs plus the typed fit/test payload (`FitRunPayload`)
-- `graphids.primitives` for data,
-  model, loss, and temporal representation primitives
-
-The older plan-chassis documentation is kept as historical reference in
-[`docs/reference/orchestration.md`](../reference/orchestration.md).
+- `graphids.exp.config` defines experiments, resolved runs, resources, outputs,
+  and the fit/test payload (`FitRunPayload`).
+- `graphids.data.config.CANEventDataConfig` defines event data loading and
+  chronological stream batching.
+- `graphids.models.config.EventGraphMambaConfig` defines the graph-Mamba model
+  and its training objectives.
+- `graphids.data.representation.CANEventRepresentationConfig` defines the
+  message-preserving event contract.
 
 Experiments may extend one relative base YAML. See
 [configuration composition](../reference/config-architecture.md) for merge
 rules, expanded config snapshots, and standalone compatibility.
 
-## `temporal_hybrid`
+`graphids.exp.runtime` resolves the built-in YAML types `can_event_dm` and
+`event_graph_mamba` directly to their config classes. Custom components and
+callbacks use `class_path` with optional `init_args`. Config builders and direct
+data/model constructors share validation; checkpoint reconstruction uses the
+same model settings.
 
-The `temporal_hybrid` model primitive exposes the newer architecture as a
-modular config option in the same stack as the temporal classifier, GAT, RNN,
-and VGAE baselines.
+Python imports use the domain packages above. The old `graphids.core` and
+`graphids.primitives*` modules have been removed without forwarding aliases.
+YAML type names, config fields, and serialized artifact schemas are unchanged.
 
-Supported top-level knobs:
-
-- `objective`: `supervised`, `anomaly`, or `joint`
-- `memory`: `type: tgn`, `enabled`, and `reset_on_stream_end`
-- `backbone`: `type: none | gru | ssm_lite | mamba`, `layers`, and `dropout`
-- `heads`: `classification`, `next_id`, `iat`, and `payload_delta`
-- `anomaly`: `mode: regression | nll` plus optional log-scale clamps
-- `rhythm`: optional causal per-ID IAT summary branch
-- `motif`: optional recent destination-ID/IAT motif branch
-- `scan`: `profile_subphases`, optional `rhythm_kernel`, `time_kernel`,
-  `motif_writer`, `ssm_kernel`, and `cuda_graph`
-- `loss_weights` and `anomaly_score_weights`
-
-Head defaults follow the objective. Supervised runs enable the classification
-head, anomaly runs enable the self-supervised heads, and joint runs enable both.
-Invalid combinations fail during config/model construction: anomaly runs cannot
-receive a classifier loss, supervised runs require classification, and anomaly
-or joint runs require at least one anomaly head.
-
-`memory.time_encoding_dim` enables CAN-TGN-style elapsed-time encodings for the
-source and destination ID memories. `memory.use_source` and
-`memory.use_destination` support memory ablations. `anomaly.mode: nll` changes
-the IAT and payload-delta anomaly terms from SmoothL1 errors to Gaussian
-negative log-likelihoods; next-ID remains categorical NLL in both modes.
-Lane-batched inputs use the promoted strict-rich scan path by default.
-`scan.profile_subphases` enables scan subphase timing when phase profiling is
-also enabled.
-
-Canonical smoke examples live in `configs/experiments/temporal_hybrid_*_smoke.yml`.
-Final benchmark-matrix configs are intentionally separate from the core smoke
-integration so the architecture can be validated before broader scheduling.
+::: graphids.exp.config

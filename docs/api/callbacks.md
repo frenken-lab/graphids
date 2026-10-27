@@ -1,4 +1,4 @@
-# Core: Callbacks
+# Callbacks
 
 Lightning owns the training loop. graphids only ships callbacks that
 encode policy Lightning's stock callbacks don't:
@@ -14,6 +14,6 @@ summarizes native metric histories for offline diagnostic runs.
 
 Lightning owns the training loop and callback lifecycle.
 
-## `graphids.core.callbacks`
+## `graphids.callbacks`
 
-::: graphids.core.callbacks
+::: graphids.callbacks

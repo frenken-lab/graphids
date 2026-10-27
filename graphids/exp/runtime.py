@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 
 def resolve_spec(spec: Any) -> Any:
-    """Resolve a nested primitive/class-path spec without calling ``build()``."""
+    """Resolve a nested component/class-path spec without calling ``build()``."""
     if isinstance(spec, BaseModel):
         spec = spec.model_dump(mode="json")
     if isinstance(spec, list):
@@ -28,19 +28,26 @@ def resolve_spec(spec: Any) -> Any:
         return cls(**init_args)
 
     if "type" in spec:
-        from graphids import primitives as primitive_mod
+        match spec["type"]:
+            case "can_event_dm":
+                from graphids.data.config import CANEventDataConfig
 
-        factory = getattr(primitive_mod, str(spec["type"]), None)
-        if callable(factory):
-            kwargs = {k: resolve_spec(v) for k, v in spec.items() if k != "type"}
-            return factory(**kwargs)
-        raise ValueError(f"unknown primitive: {spec['type']!r}")
+                config_class = CANEventDataConfig
+            case "event_graph_mamba":
+                from graphids.models.config import EventGraphMambaConfig
+
+                config_class = EventGraphMambaConfig
+            case _:
+                raise ValueError(f"unknown component type: {spec['type']!r}")
+        return config_class.model_validate(
+            {k: resolve_spec(v) for k, v in spec.items()}
+        )
 
     return {k: resolve_spec(v) for k, v in spec.items()}
 
 
 def build_component(spec: Any) -> Any:
-    """Build a config primitive, or return an instantiated class-path object.
+    """Build a component config, or return an instantiated class-path object.
 
     ``build`` is the optional construction hook at this config boundary.
     Errors from the builder propagate unchanged.

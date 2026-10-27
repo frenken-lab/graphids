@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from graphids.core.evaluation import EventScores, iter_score_chunks
-from graphids.core.metrics import raw_average_precision
+from graphids.evaluation import EventScores, iter_score_chunks
+from graphids.metrics import raw_average_precision
 
 
 @pytest.fixture

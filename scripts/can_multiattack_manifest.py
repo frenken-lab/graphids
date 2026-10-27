@@ -420,7 +420,7 @@ def main():
     check_groups(assignments, canonical, groups)
     for record, proof in zip(records, evidence, strict=True):
         record["session"] = "capture-group:" + groups.find(canonical[proof["path"]])
-    from graphids.core.data.recordings import CANRecordingManifest, Recording
+    from graphids.data.recordings import CANRecordingManifest, Recording
 
     CANRecordingManifest(tuple(Recording(**r) for r in records), 1, True).validate()
     manifest = dict(

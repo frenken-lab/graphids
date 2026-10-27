@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from graphids.core.evaluation import SCORE_COLUMNS, SCORE_DTYPE, SCORE_FILE
+from graphids.evaluation import SCORE_COLUMNS, SCORE_DTYPE, SCORE_FILE
 
 
 def pack_epoch(directory: Path, *, remove_shards=False):

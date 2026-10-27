@@ -6,8 +6,8 @@ from functools import partial
 import pytest
 import torch
 
-from graphids.core.data.events.data import EventStreamWindows
-from graphids.core.models.event_graph_mamba import EventGraphMambaState
+from graphids.data.events import EventStreamWindows
+from graphids.models.event_graph_mamba import EventGraphMambaState
 from tests.event_fixtures import event_record, model
 from tests.event_reference import serial_loss, serial_loss_sums, serial_scan
 
@@ -392,7 +392,7 @@ def test_mid_epoch_checkpoint_rejected():
 
 
 def test_duplicate_physical_rows_are_preserved(tmp_path):
-    from graphids.core.data.events.data import EventRecording, materialize_events
+    from graphids.data.events import EventRecording, materialize_events
     from tests.event_fixtures import write_record
 
     rec = write_record(
@@ -422,7 +422,7 @@ def test_epoch_boundary_resume_matches_uninterrupted_optimizer_and_rng(
 ):
     import lightning.pytorch as pl
 
-    from graphids.core.models.event_graph_mamba import EventGraphMamba
+    from graphids.models.event_graph_mamba import EventGraphMamba
     from tests.event_fixtures import source_dm
 
     if execution != "cpu" and not torch.cuda.is_available():
@@ -556,7 +556,7 @@ def test_event_verification_cli_backend_publishes_complete_and_failed_reports(tm
     import numpy as np
     import yaml
 
-    from graphids.core.data.events.verify import verify_events
+    from graphids.data.verify import verify_events
     from tests.event_fixtures import source_dm
 
     dm = source_dm(tmp_path)
@@ -625,11 +625,11 @@ def test_prepared_batched_graph_losses_and_input_gradients(
     if backend == "official" and not torch.cuda.is_available():
         pytest.skip("official CUDA required")
     device = "cuda" if backend == "official" else "cpu"
-    module = importlib.import_module("graphids.core.models.event_graph_mamba")
+    module = importlib.import_module("graphids.models.event_graph_mamba")
     monkeypatch.setattr(module, "_GRAPH_WORKSPACE_BYTES", 2304)
     _, a = event_record(tmp_path, key="prepared-a", normal=True)
     _, b = event_record(tmp_path, key="prepared-b")
-    from graphids.core.data.events.data import prepare_routing
+    from graphids.data.events import prepare_routing
 
     def batches(lo, hi):
         first, second = a.batch(lo, hi), b.batch(lo, hi)
@@ -738,7 +738,7 @@ def test_prepared_routing_arbitrary_boundaries_and_provenance(tmp_path):
 
 @pytest.mark.parametrize("workers", [0, 2])
 def test_training_loader_order_rng_and_early_exit(tmp_path, workers):
-    from graphids.core.data.events.data import EventTrainingLoader
+    from graphids.data.events import EventTrainingLoader
 
     _, a = event_record(tmp_path, key="loader-a", normal=True)
     _, b = event_record(tmp_path, key="loader-b")
@@ -783,7 +783,7 @@ def test_training_loader_order_rng_and_early_exit(tmp_path, workers):
     "prefetch", [False, pytest.param(True, marks=[pytest.mark.gpu, pytest.mark.slurm])]
 )
 def test_loader_propagates_preparation_errors(tmp_path, prefetch):
-    from graphids.core.data.events.data import EventTrainingLoader
+    from graphids.data.events import EventTrainingLoader
 
     _, events = event_record(tmp_path)
     dataset = EventStreamWindows([events], 2, 1, 2)
@@ -804,8 +804,8 @@ def test_loader_propagates_preparation_errors(tmp_path, prefetch):
 def test_cuda_prefetch_preserves_scores_gradients_and_dropout_rng(tmp_path):
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    from graphids.core.data.events.data import EventTrainingLoader
-    from graphids.core.models.event_graph_mamba import EventGraphMamba
+    from graphids.data.events import EventTrainingLoader
+    from graphids.models.event_graph_mamba import EventGraphMamba
 
     _, a = event_record(tmp_path, key="parity-a", normal=True)
     _, b = event_record(tmp_path, key="parity-b")
@@ -953,16 +953,16 @@ def test_stateless_forward_on_arbitrary_slice_matches_serial_oracle(tmp_path):
 def test_constructor_typed_and_production_defaults_agree():
     import inspect
 
-    from graphids.core.data.events.data import CANEventDataModule
-    from graphids.core.models.event_graph_mamba import EventGraphMamba
+    from graphids.data.config import CANEventDataConfig
+    from graphids.data.events import CANEventDataModule
     from graphids.exp.config import ExperimentConfig
-    from graphids.primitives_data import CANEventDMCfg
-    from graphids.primitives_models import EventGraphMambaCfg
+    from graphids.models.config import EventGraphMambaConfig
+    from graphids.models.event_graph_mamba import EventGraphMamba
 
     config = ExperimentConfig.from_yaml(
         "configs/experiments/graph_mamba_events_source.yml"
     ).config
-    data = CANEventDMCfg(
+    data = CANEventDataConfig(
         manifest_path="unused", datasets=["set_01"], cache_root="unused"
     )
     for name in (
@@ -982,7 +982,7 @@ def test_constructor_typed_and_production_defaults_agree():
             == config["data"][name]
         )
     assert (
-        EventGraphMambaCfg().max_graph_tokens
+        EventGraphMambaConfig().max_graph_tokens
         == inspect.signature(EventGraphMamba).parameters["max_graph_tokens"].default
         == config["model"]["max_graph_tokens"]
     )

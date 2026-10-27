@@ -43,14 +43,14 @@ def benchmark(
     import numpy as np
     import torch
 
-    from graphids.core.data.events.data import EventStreamWindows, EventTrainingLoader
-    from graphids.core.models.event_graph_mamba import (
+    from graphids.data.events import EventStreamWindows, EventTrainingLoader
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.runtime import build_component
+    from graphids.models.config import EventGraphMambaConfig
+    from graphids.models.event_graph_mamba import (
         _GRAPH_WORKSPACE_BYTES,
         EventGraphMambaState,
     )
-    from graphids.exp.config import ExperimentConfig
-    from graphids.exp.runtime import build_component
-    from graphids.primitives_models import EventGraphMambaCfg
     from tests.event_reference import serial_loss_sums, serial_scan
 
     if not torch.cuda.is_available():
@@ -71,8 +71,8 @@ def benchmark(
         raise ValueError("repeats must be positive")
     cfg = ExperimentConfig.from_yaml(config)
     # Construct only training query caches. No validation files are opened.
-    from graphids.core.data.events.data import EventRecording, materialize_events
-    from graphids.core.data.recordings import CANRecordingManifest
+    from graphids.data.events import EventRecording, materialize_events
+    from graphids.data.recordings import CANRecordingManifest
 
     manifest = CANRecordingManifest.load(
         cfg.config["data"]["manifest_path"], verify_files=False
@@ -110,7 +110,7 @@ def benchmark(
     if events_per_recording < max(chunks):
         raise ValueError("timed recording segment must cover the largest chunk")
     segment_events = events_per_recording
-    model_spec = EventGraphMambaCfg.model_validate(cfg.config["model"]).model_dump()
+    model_spec = EventGraphMambaConfig.model_validate(cfg.config["model"]).model_dump()
     # Raise routing capacity explicitly for the requested chunks, without
     # changing model dimensions or the independent 32 GiB allocator ceiling.
     required_tokens = max(chunks) * max(len(r.first_ids) for r in events)
@@ -648,7 +648,7 @@ def public_smoke(output, *, selected_config=None):
 
     import yaml
 
-    from graphids.core.data.recordings import CANRecordingManifest
+    from graphids.data.recordings import CANRecordingManifest
     from tests.event_fixtures import write_record
 
     train = write_record(
@@ -741,11 +741,11 @@ def public_smoke(output, *, selected_config=None):
 
 def benchmark_options(args):
     """Use the same typed defaults and explicit overrides as public training."""
+    from graphids.data.config import CANEventDataConfig
     from graphids.exp.config import ExperimentConfig
-    from graphids.primitives_data import CANEventDMCfg
 
     cfg = ExperimentConfig.from_yaml(args.config)
-    data = CANEventDMCfg.model_validate(cfg.config["data"])
+    data = CANEventDataConfig.model_validate(cfg.config["data"])
 
     def chosen(name, default):
         value = getattr(args, name)

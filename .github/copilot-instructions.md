@@ -16,16 +16,17 @@ and `docs/responsibilities.md` for the active module map.
 
 - YAML → `ExperimentConfig` → `RunConfig` → Ray/SLURM → Lightning `fit`/`test`.
 - `graphids/exp/config.py` owns YAML inheritance and launch validation;
-  `graphids/exp/runtime.py` constructs primitives and class-path components.
-- `can_event`, `can_event_dm`, and `event_graph_mamba` are the active primitives.
-  Their config definitions also validate direct data/model construction.
+  `graphids/exp/runtime.py` constructs built-in and class-path components.
+- `graphids/data/config.py` and `graphids/models/config.py` own component configs
+  and validate direct construction. YAML types remain `can_event_dm` and
+  `event_graph_mamba`; the representation kind is `can_event`.
 - The event model owns its objectives. Configure `payload_weight` and
   `positive_weight`; external `loss_fn` overrides are retired.
-- `graphids/core/data/recordings.py` owns reviewed recording provenance;
-  `core/data/events/` owns lossless caches and chronological independent streams.
-- `core/models/event_graph_mamba.py` owns learned state, loss normalization,
+- `graphids/data/recordings.py` owns reviewed recording provenance;
+  `graphids/data/events.py` owns lossless caches and chronological independent streams.
+- `graphids/models/event_graph_mamba.py` owns learned state, loss normalization,
   truncated backpropagation, and epoch-boundary checkpoints.
-- `core/evaluation.py` owns packed frame scores and coverage validation.
+- `graphids/evaluation.py` owns packed frame scores and coverage validation.
 - The Typer commands are in `graphids/cli/exp.py` and `graphids/cli/can.py`.
 - Workers journal state and offline ingest payloads under `.graphids/`.
   `gx exp ingest` serializes shared MLflow writes after jobs complete.

@@ -4,7 +4,7 @@ import hashlib
 
 import numpy as np
 
-from graphids.core.data.recordings import iter_rows
+from graphids.data.recordings import iter_rows
 
 
 def verify_recording(events):

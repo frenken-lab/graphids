@@ -1,6 +1,6 @@
 import csv
 
-from graphids.core.data.recordings import Recording, file_hash
+from graphids.data.recordings import Recording, file_hash
 
 
 def write_record(
@@ -40,7 +40,7 @@ def write_record(
 
 def event_record(tmp_path, *, key="frames", normal=False, role="train_query"):
     """A tiny recording with tied clocks, repeated IDs, and varying payloads."""
-    from graphids.core.data.events.data import EventRecording, materialize_events
+    from graphids.data.events import EventRecording, materialize_events
 
     rec = write_record(
         tmp_path,
@@ -63,7 +63,7 @@ def model(backend="reference", **kwargs):
     """A reproducible small model for CPU and official-backend comparisons."""
     import torch
 
-    from graphids.core.models.event_graph_mamba import EventGraphMamba
+    from graphids.models.event_graph_mamba import EventGraphMamba
 
     torch.manual_seed(42)
     return EventGraphMamba(
@@ -83,8 +83,8 @@ def source_dm(tmp_path):
     import json
     from dataclasses import asdict, replace
 
-    from graphids.core.data.events.data import CANEventDataModule
-    from graphids.core.data.recordings import CANRecordingManifest
+    from graphids.data.events import CANEventDataModule
+    from graphids.data.recordings import CANRecordingManifest
 
     train, _ = event_record(tmp_path, key="train", normal=True)
     val, _ = event_record(tmp_path, key="validation", role="val_query")

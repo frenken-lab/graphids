@@ -3,24 +3,28 @@
 Experiment YAML in `configs/experiments/` defines a launchable run: source data,
 model, representation, resources and `fit` or `test` stage. The typed boundary
 in `graphids/exp/config.py` expands inheritance, checks representation agreement,
-and rejects retired contracts. `graphids/primitives*.py` exports the concrete `CANEventRepresentationCfg`,
-data/model configs, and the `can_event_dm` / `event_graph_mamba` factories.
+and rejects retired contracts. `graphids/data/config.py` and
+`graphids/models/config.py` define `CANEventDataConfig` and
+`EventGraphMambaConfig`; `graphids/data/representation.py` defines the
+`CANEventRepresentationConfig` contract. The runtime resolves the YAML types
+`can_event_dm` and `event_graph_mamba` directly to their config classes.
 
-`graphids/core/data/recordings.py` owns reviewed recording/provenance validation.
-`graphids/core/data/events/` owns lossless caches, chronological independent-stream
-scheduling, eligible target totals, and source ingestion verification.
-`graphids/core/models/event_graph_mamba.py` owns continuous learned state,
+`graphids/data/recordings.py` owns reviewed recording/provenance validation.
+`graphids/data/events.py` owns lossless caches, chronological independent-stream
+scheduling, and eligible target totals. `graphids/data/verify.py` owns source
+ingestion verification.
+`graphids/models/event_graph_mamba.py` owns continuous learned state,
 truncated backpropagation, separately normalized objectives, epoch checkpoints,
-and Lightning evaluation hooks. `graphids/core/evaluation.py` owns packed frame
+and Lightning evaluation hooks. `graphids/evaluation.py` owns packed frame
 scores, recording coverage checks and the evaluation index; it uses only NumPy
-and the standard library. Shared exact AP and AUC live in `graphids/core/metrics.py`, using one
+and the standard library. Shared exact AP and AUC live in `graphids/metrics.py`, using one
 tied-score ranking pass.
 
 `graphids/exp/runtime.py` constructs data, models and callbacks.
 `graphids/exp/ray_backend.py` launches Ray workers and runs Lightning, journals
 run status and queues offline metrics for serialized ingestion.
 `graphids/exp/slurm.py` and `graphids/cli/exp.py` render and submit allocations.
-`graphids/core/callbacks.py` provides checkpoint hashes and resource callbacks;
+`graphids/callbacks.py` provides checkpoint hashes and resource callbacks;
 `graphids/_mlflow.py` owns tracking and system metrics.
 
 The active flow is YAML → typed run → Ray/Slurm launch → Lightning `fit`/`test`

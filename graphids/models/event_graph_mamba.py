@@ -18,8 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from graphids import event_defaults as defaults
-from graphids.core.evaluation import EventScores
-from graphids.primitives_models import EventGraphMambaCfg
+from graphids.evaluation import EventScores
+from graphids.models.config import EventGraphMambaConfig
 
 from .mamba_chunk import mamba_chunk
 
@@ -58,7 +58,7 @@ class EventGraphMamba(pl.LightningModule):
         schema_version: int = 1,
     ):
         super().__init__()
-        cfg = EventGraphMambaCfg(
+        cfg = EventGraphMambaConfig(
             width=width,
             layers=layers,
             d_state=d_state,
@@ -150,7 +150,7 @@ class EventGraphMamba(pl.LightningModule):
         ), header
 
     def _routing(self, batch, state):
-        from graphids.core.data.events.data import prepare_routing
+        from graphids.data.events import prepare_routing
 
         route = batch.routing
         if route is not None and (

@@ -40,6 +40,9 @@ dev = ["pytest>=7.0.0", "httpx>=0.27", "ruff>=0.4"]
 graphids = "graphids.__main__:main"
 gx = "graphids.__main__:main"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["graphids"]
 

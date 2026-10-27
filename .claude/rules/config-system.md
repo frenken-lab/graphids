@@ -10,11 +10,12 @@ jsonnet composition, and old `gx run`/`gx plans` commands are retired.
 - Mappings merge recursively; child scalars, lists, and nulls replace. A new
   component `type` or `class_path` replaces the whole component.
 - Keep dataset, split policy, geometry, and treatment differences in leaves.
-- Primitive configs forbid unknown fields. Shared constructor validation is in
-  `graphids/primitives_data.py` and `graphids/primitives_models.py`; direct
+- Component configs forbid unknown fields. Shared constructor validation is in
+  `graphids/data/config.py` and `graphids/models/config.py`; direct
   constructors reuse those definitions. Construction is in `graphids/exp/runtime.py`.
-- Preserve active primitive imports and checkpoint class paths. Remove obsolete
-  aliases only after checking code, configs, scripts, and live documentation.
+- Keep component imports and configured class paths aligned across code,
+  configs, scripts, and live documentation. Preserve checkpoint contents when
+  moving Python modules.
 - Path resolution lives in `graphids/paths.py`, with environment overriding the
   project `.env`. Runs and artifacts belong outside source storage on OSC.
 - SLURM submission saves expanded YAML; executed runs save `resolved-run.yml`.

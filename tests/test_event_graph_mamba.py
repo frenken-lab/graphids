@@ -8,19 +8,19 @@ import numpy as np
 import pytest
 import torch
 
-from graphids.core.data.events.data import (
+from graphids.data.events import (
     EventChunks,
     EventRecording,
     materialize_events,
 )
-from graphids.core.data.recordings import (
+from graphids.data.recordings import (
     iter_rows,
     read_rows,
 )
-from graphids.core.metrics import raw_average_precision
-from graphids.core.models.event_graph_mamba import EventGraphMamba
 from graphids.exp.config import ExperimentConfig
 from graphids.exp.runtime import build_component
+from graphids.metrics import raw_average_precision
+from graphids.models.event_graph_mamba import EventGraphMamba
 from tests.event_fixtures import event_record, model, source_dm
 
 
@@ -216,7 +216,7 @@ def test_lightning_fit_evaluation_coverage_and_checkpoint_round_trip(tmp_path):
     assert index["coverage"] == {"validation": 6}
     assert sum(c["count"] for c in index["chunks"]) == 6
     # CONTRACT: Lightning publishes the same exact AP as the saved frame scores.
-    from graphids.core.evaluation import iter_score_chunks
+    from graphids.evaluation import iter_score_chunks
 
     blocks = [
         values

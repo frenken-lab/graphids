@@ -246,10 +246,10 @@ shortcut. Neither explanation is established by the current metrics.
 
 Implementation locations:
 
-- `graphids/core/data/events/data.py`: construct causal metadata and valid masks.
-- `graphids/core/models/event_graph_mamba.py`: encode optional context and graph age.
-- `graphids/primitives_data.py` / `graphids/primitives_models.py`: expose typed options.
-- `graphids/core/data/events/representation.py`: version changed input semantics.
+- `graphids/data/events.py`: construct causal metadata and valid masks.
+- `graphids/models/event_graph_mamba.py`: encode optional context and graph age.
+- `graphids/data/config.py` / `graphids/models/config.py`: expose typed options.
+- `graphids/data/representation.py`: version changed input semantics.
 
 For event `t` with ID `i`, find the latest preceding observation of `i`, even across
 a chunk boundary. Candidate auxiliary inputs are `t - last_time[i]`, byte-wise

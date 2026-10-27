@@ -5,7 +5,7 @@ from typing import Literal
 
 
 @dataclass(frozen=True)
-class CANEventRepresentationCfg:
+class CANEventRepresentationConfig:
     kind: Literal["can_event"] = "can_event"
     schema_version: int = 1
 

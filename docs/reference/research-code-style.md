@@ -4,9 +4,18 @@ GraphIDS favors code a researcher can read from configuration through data,
 model, loss, and evaluation. Use the existing Python, PyTorch, Lightning,
 Pydantic, and Ruff conventions; keep the algorithm visible.
 
+## Module organization
+
+- Use shallow domain packages: `data`, `models`, `exp`, and `cli`. Shared
+  evaluation, metrics, and callbacks live directly under `graphids`.
+- Keep data/model configuration in the owning package's `config.py`, with
+  descriptive `Config` class names. Experiment composition belongs in `exp`.
+- Import from the owning module. Avoid catch-all facades, generic config
+  aliases, and wrapper factories that only call a config constructor.
+
 ## Interfaces and validation
 
-- Validate configuration with the primitive Pydantic models. Direct constructors
+- Validate configuration with the domain-owned Pydantic models. Direct constructors
   and checkpoint reconstruction use those same definitions. Do not maintain a
   second set of handwritten range and cross-field checks.
 - Validate external recordings, caches, checkpoints, and stream transitions at

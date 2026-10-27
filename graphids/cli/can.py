@@ -23,7 +23,7 @@ def audit(
 ):
     import json
 
-    from graphids.core.data.recordings import audit_catalog
+    from graphids.data.recordings import audit_catalog
     from graphids.paths import lake_root, load_catalog
 
     raw_root = raw_root or Path(lake_root()) / "raw"
@@ -41,6 +41,7 @@ def verify_events(
     output: Annotated[Path, typer.Option(help="Verification JSON destination")],
 ):
     """Verify every source frame against its reviewed CSV, in a Slurm allocation."""
-    from graphids.core.data.events.verify import verify_events as verify
+    from graphids.data.verify import verify_events as verify
+
     result = verify(config, output)
     typer.echo(f"Verified {result['frames']} source frames; wrote {output}")

@@ -170,7 +170,7 @@ it in loss logging and anomaly scores. Loss eligibility remains normal-only,
 verified, and scored; anomaly scores use the existing payload-support mask.
 Sanity checks and non-publishing ranks retain the loss-only path.
 
-`graphids.core.evaluation.EventScores` owns packed score writing, coverage checks and
+`graphids.evaluation.EventScores` owns packed score writing, coverage checks and
 exact epoch AP independently of the model and Lightning. The model supplies
 the six score columns and logs the returned metrics. Artifact schema 2 stores
 little-endian FP64 values in row-major order, with shape/dtype and chunk offsets
@@ -181,11 +181,11 @@ Metric scratch space uses local `TMPDIR` rather than the persistent lake.
 epoch: it verifies source metadata, exact coverage and the packed-file SHA256
 before replacing the index and removing the old shards. Existing metrics are
 preserved exactly. Direct artifact
-and metric tests live in `tests/core/test_evaluation.py` and
-`tests/core/test_metrics.py`; end-to-end coverage and checkpoint tests remain
+and metric tests live in `tests/test_evaluation.py` and
+`tests/test_metrics.py`; end-to-end coverage and checkpoint tests remain
 in `tests/test_event_graph_mamba.py`.
-The CI `artifact-tests` job runs these direct tests with only NumPy and pytest;
-model, training and CUDA checks still run through the Slurm gate.
+The CI `cpu-tests` job includes these direct tests; training and CUDA checks
+run through the Slurm gate.
 
 Implementation verification on 2026-10-16 checked all **21,285,666 query frames
 across 21 source recordings**, with every cached field matching its CSV row.

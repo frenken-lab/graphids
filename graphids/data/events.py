@@ -20,15 +20,15 @@ from filelock import FileLock
 from torch.utils.data import DataLoader, Dataset
 
 from graphids import event_defaults as defaults
-from graphids.core.data.recordings import (
+from graphids.data.config import CANEventDataConfig
+from graphids.data.recordings import (
     CANRecordingManifest,
     Recording,
     file_hash,
     iter_rows,
 )
-from graphids.primitives_data import CANEventDMCfg
 
-from .representation import CANEventRepresentationCfg
+from .representation import CANEventRepresentationConfig
 
 COLUMNS = {
     "times": (np.float64, ()),
@@ -431,7 +431,7 @@ class CANEventDataModule(pl.LightningDataModule):
         manifest_path: str | Path,
         datasets: list[str],
         cache_root: str | Path,
-        representation_cfg: CANEventRepresentationCfg | None = None,
+        representation_cfg: CANEventRepresentationConfig | None = None,
         chunk_events: int = defaults.CHUNK_EVENTS,
         stream_batch_size: int = defaults.STREAM_BATCH_SIZE,
         effective_batch_events: int = defaults.EFFECTIVE_BATCH_EVENTS,
@@ -443,11 +443,11 @@ class CANEventDataModule(pl.LightningDataModule):
         cuda_prefetch: bool = defaults.CUDA_PREFETCH,
     ):
         super().__init__()
-        cfg = CANEventDMCfg(
+        cfg = CANEventDataConfig(
             manifest_path=str(manifest_path),
             datasets=datasets,
             cache_root=str(cache_root),
-            representation_cfg=representation_cfg or CANEventRepresentationCfg(),
+            representation_cfg=representation_cfg or CANEventRepresentationConfig(),
             chunk_events=chunk_events,
             stream_batch_size=stream_batch_size,
             effective_batch_events=effective_batch_events,

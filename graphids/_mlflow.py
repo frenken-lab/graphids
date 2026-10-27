@@ -141,7 +141,7 @@ class MLflowSystemMetricsCallback(pl.Callback):
     def _batch_phase(self, batch: Any) -> None:
         if self._phase is None:
             return
-        from graphids.core.data.events.data import EventTrainingWindow
+        from graphids.data.events import EventTrainingWindow
 
         groups = batch.groups if isinstance(batch, EventTrainingWindow) else [[batch]]
         totals = self._phase["totals"]

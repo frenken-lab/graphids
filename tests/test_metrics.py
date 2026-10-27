@@ -1,6 +1,6 @@
 import pytest
 
-from graphids.core.metrics import frame_metrics, raw_average_precision
+from graphids.metrics import frame_metrics, raw_average_precision
 
 
 def test_frame_metrics_match_independent_threshold_and_pairwise_definitions():

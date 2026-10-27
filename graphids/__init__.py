@@ -1,21 +1,6 @@
-"""GraphIDS: Graph-based Intrusion Detection System.
+"""GraphIDS: CAN intrusion detection with shared graph-Mamba models.
 
-Public API:
-    import graphids.core  # lazy-loaded
+Import data, models, and experiment interfaces from their owning packages.
 """
 
 __version__ = "2.0.0"
-
-_lazy_submodules = {"core"}
-
-
-def __getattr__(name):
-    if name in _lazy_submodules:
-        import importlib
-
-        return importlib.import_module(f"graphids.{name}")
-    raise AttributeError(f"module 'graphids' has no attribute {name!r}")
-
-
-def __dir__():
-    return [*_lazy_submodules, "__version__"]

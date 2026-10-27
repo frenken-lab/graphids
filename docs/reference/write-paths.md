@@ -65,7 +65,7 @@ coverage, aggregate metrics and per-recording metrics. Input chunk size does not
 change the persistent file count. Metric scratch mappings use local `TMPDIR`.
 
 Read either legacy NPZ shards or packed artifacts with
-`graphids.core.evaluation.iter_score_chunks`. To consolidate a complete legacy
+`graphids.evaluation.iter_score_chunks`. To consolidate a complete legacy
 epoch without changing its scores or metrics:
 
 ```bash

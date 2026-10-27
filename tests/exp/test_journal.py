@@ -99,8 +99,8 @@ def test_manifest_and_events_round_trip(tmp_path):
         seed=42,
         git_sha="abc123",
         payload=FitRunPayload(
-            model={"class_path": "graphids.primitives_models.EventGraphMambaCfg"},
-            data={"class_path": "graphids.primitives_data.CANEventDMCfg"},
+            model={"class_path": "graphids.models.config.EventGraphMambaConfig"},
+            data={"class_path": "graphids.data.config.CANEventDataConfig"},
         ),
         resources=ResourceConfig(),
         outputs=OutputConfig(run_dir=str(run_dir)),

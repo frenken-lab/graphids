@@ -127,7 +127,7 @@ def test_phase_metrics_count_windows_chunks_and_isolate_phase_lifetimes(
 ):
     """Deferred counters preserve masks across devices, phase changes, and failures."""
     from graphids._mlflow import MLflowSystemMetricsCallback
-    from graphids.core.data.events.data import EventStreamWindows
+    from graphids.data.events import EventStreamWindows
     from tests.event_fixtures import event_record
 
     if device == "cuda" and not torch.cuda.is_available():

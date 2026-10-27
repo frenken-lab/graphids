@@ -16,7 +16,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from graphids.core.data.events.representation import CANEventRepresentationCfg
+from graphids.data.representation import CANEventRepresentationConfig
 from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
@@ -65,7 +65,7 @@ def load_experiment_yaml(
 
 
 def _find_data_representation_payload(value: Any) -> Any:
-    """Find representation metadata in primitive or nested class-path specs."""
+    """Find representation metadata in built-in or nested class-path specs."""
     if not isinstance(value, Mapping):
         return None
     if "representation_cfg" in value:
@@ -159,15 +159,15 @@ class FitRunPayload(_StrictModel):
     @model_validator(mode="after")
     def validate_components(self):
         if self.model.get("type") == "event_graph_mamba":
-            from graphids.primitives_models import EventGraphMambaCfg
+            from graphids.models.config import EventGraphMambaConfig
 
-            EventGraphMambaCfg.model_validate(self.model)
+            EventGraphMambaConfig.model_validate(self.model)
             if self.data.get("type") != "can_event_dm":
                 raise ValueError("event_graph_mamba requires can_event_dm")
         if self.data.get("type") == "can_event_dm":
-            from graphids.primitives_data import CANEventDMCfg
+            from graphids.data.config import CANEventDataConfig
 
-            CANEventDMCfg.model_validate(self.data)
+            CANEventDataConfig.model_validate(self.data)
             if self.model.get("type") != "event_graph_mamba":
                 raise ValueError("can_event_dm requires event_graph_mamba")
             if (
@@ -217,8 +217,8 @@ class RunConfig(_StrictModel):
     seed: int = 42
     plan_id: str | None = None
     git_sha: str = "unknown"
-    representation_cfg: CANEventRepresentationCfg = Field(
-        default_factory=CANEventRepresentationCfg
+    representation_cfg: CANEventRepresentationConfig = Field(
+        default_factory=CANEventRepresentationConfig
     )
     payload: RunPayload = Field(default_factory=FitRunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
@@ -304,8 +304,8 @@ class ExperimentConfig(_StrictModel):
     seed: int = 42
     git_sha: str = "unknown"
     plan_id: str | None = None
-    representation_cfg: CANEventRepresentationCfg = Field(
-        default_factory=CANEventRepresentationCfg
+    representation_cfg: CANEventRepresentationConfig = Field(
+        default_factory=CANEventRepresentationConfig
     )
     config: dict[str, Any] = Field(default_factory=dict)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
@@ -356,7 +356,7 @@ class ExperimentConfig(_StrictModel):
         data_representation = _find_data_representation_payload(cfg.get("data", {}))
         if data_representation is not None:
             if (
-                TypeAdapter(CANEventRepresentationCfg).validate_python(
+                TypeAdapter(CANEventRepresentationConfig).validate_python(
                     data_representation
                 )
                 != self.representation_cfg

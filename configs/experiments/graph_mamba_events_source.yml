@@ -54,7 +54,7 @@ config:
     log_every_n_steps: 50
   callbacks:
     checkpoint:
-      class_path: graphids.core.callbacks.Sha256ModelCheckpoint
+      class_path: graphids.callbacks.Sha256ModelCheckpoint
       init_args:
         dirpath: "{run_dir}/checkpoints"
         monitor: val/classification_frame_ap

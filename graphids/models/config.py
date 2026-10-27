@@ -7,11 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from graphids import event_defaults as defaults
 
 
-class _Cfg(BaseModel):
+class EventGraphMambaConfig(BaseModel):
+    """Validated settings shared by YAML construction and checkpoint loading."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class EventGraphMambaCfg(_Cfg):
     type: Literal["event_graph_mamba"] = "event_graph_mamba"
     width: int = Field(default=128, ge=1)
     layers: int = Field(default=2, ge=1)
@@ -29,13 +28,6 @@ class EventGraphMambaCfg(_Cfg):
     schema_version: Literal[1] = 1
 
     def build(self):
-        from graphids.core.models.event_graph_mamba import EventGraphMamba
+        from graphids.models.event_graph_mamba import EventGraphMamba
 
         return EventGraphMamba(**self.model_dump(exclude={"type"}))
-
-
-def event_graph_mamba(**kwargs) -> EventGraphMambaCfg:
-    return EventGraphMambaCfg(**kwargs)
-
-
-ModelCfg = EventGraphMambaCfg

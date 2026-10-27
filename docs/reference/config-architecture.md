@@ -89,31 +89,32 @@ For `fit` and `test`, the config layer checks that
 `representation_cfg`. That prevents the run metadata and materialized cache
 from silently drifting.
 
-## 3. Primitives
+## 3. Component configuration
 
-`graphids.primitives` is the public primitive module. It re-exports data,
-model and message-preserving event representation primitives.
+Data/model config objects are Pydantic models with `extra="forbid"`:
 
-Primitive config objects are Pydantic models with `extra="forbid"`:
+- data: `graphids.data.config.CANEventDataConfig`
+- models: `graphids.models.config.EventGraphMambaConfig`
 
-- data: `graphids.primitives_data`
-- models: `graphids.primitives_models`
-- event representation: `graphids.core.data.events.representation.CANEventRepresentationCfg`
+`graphids.data.representation.CANEventRepresentationConfig` is the frozen
+dataclass describing the message-preserving event representation.
 
 Ray launch instantiation accepts either:
 
-- dictionaries with `type`, resolved through `graphids.primitives`, or
+- dictionaries with `type: can_event_dm` or `type: event_graph_mamba`, resolved
+  directly to the corresponding config class, or
 - dictionaries with `class_path` and optional `init_args`, resolved by
   importlib.
 
 `graphids.exp.runtime` owns resolution, seeding, model preparation, callbacks,
 and trainer kwargs for Ray launches and bounded event benchmarks.
-Direct data/model constructors reuse primitive validation, including checkpoint
+Direct data/model constructors reuse component validation, including checkpoint
 reconstruction. Builders propagate errors without argument filtering or retries.
 The event model owns its objectives: a non-null `loss_fn` setting is rejected
 when loading an experiment or resolved payload. Old payloads with `loss_fn: null`
 remain readable. A zero learning rate is supported for frozen-weight diagnostics.
-Import construction helpers from `graphids.exp.runtime`. This lets YAML use compact primitive specs for common objects and explicit class paths for
+Import construction helpers from `graphids.exp.runtime`. This lets YAML use
+compact component specs for common objects and explicit class paths for
 callbacks without putting import logic in the YAML loader or CLI.
 
 ## 4. Ray Dispatch
@@ -182,7 +183,7 @@ Only epoch-boundary resume is supported through `config.ckpt_path`. The model
 rejects source/config mismatches and checkpoints without complete epoch identity.
 Constructor and typed-config defaults share `graphids/event_defaults.py` and
 match the production preset. Historical factories and migration registries have
-been removed; unknown primitives fail during construction, and missing YAML
+been removed; unknown component types fail during construction, and missing YAML
 reports its path. Historical source remains in the verified snapshot archive.
 Datasets, results, clock repairs and reviewed manifests remain in place.
 
@@ -195,5 +196,5 @@ Datasets, results, clock repairs and reviewed manifests remain in place.
 5. Submit with `gx exp submit <file> -C ascend`.
 6. After completion, run `gx exp ingest <run_dir>` or `gx exp ingest-root <root>`.
 
-Add tests when the YAML exercises new launch behavior, primitive fields, or
+Add tests when the YAML exercises new launch behavior, component fields, or
 representation semantics.
