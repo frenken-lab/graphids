@@ -38,7 +38,9 @@ def write_record(
     )
 
 
-def event_record(tmp_path, *, key="frames", normal=False, role="train_query"):
+def event_record(
+    tmp_path, *, key="frames", normal=False, role="train_query", local_context=False
+):
     """A tiny recording with tied clocks, repeated IDs, and varying payloads."""
     from graphids.data.events import EventRecording, materialize_events
 
@@ -56,7 +58,9 @@ def event_record(tmp_path, *, key="frames", normal=False, role="train_query"):
             (100.02, "1F5", "", 0),
         ],
     )
-    return rec, EventRecording(materialize_events(rec, tmp_path / "cache"))
+    return rec, EventRecording(
+        materialize_events(rec, tmp_path / "cache"), local_context=local_context
+    )
 
 
 def model(backend="reference", **kwargs):
@@ -78,7 +82,7 @@ def model(backend="reference", **kwargs):
     )
 
 
-def source_dm(tmp_path):
+def source_dm(tmp_path, *, representation_cfg=None):
     """Reviewed source fixtures with an inaccessible reserved target recording."""
     import json
     from dataclasses import asdict, replace
@@ -110,6 +114,7 @@ def source_dm(tmp_path):
         num_workers=0,
         pin_memory=False,
         persistent_workers=False,
+        representation_cfg=representation_cfg,
     )
     dm.setup()
     assert len(dm.event_recordings) == 2

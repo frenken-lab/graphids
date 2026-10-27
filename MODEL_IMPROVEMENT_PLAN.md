@@ -1,6 +1,6 @@
 # CAN event model: improvement checklist and implementation plan
 
-Updated: 2026-10-23. Scope: improve detection quality in the active
+Updated: 2026-10-27. Scope: improve detection quality in the active
 `can_event_dm` / `event_graph_mamba` pipeline. This document records the research
 recommendations and proposed implementations; unchecked items are not implemented.
 It does not authorize a claim of improved accuracy before the experiments finish.
@@ -234,11 +234,58 @@ reproducible schedules, and resumed-versus-uninterrupted optimizer/RNG equivalen
 
 ## 4. First representation experiment: explicit local context
 
-- [ ] Ablate elapsed-recording-time input while preserving timestamps in artifacts.
-- [ ] Compare normalized bus timing against the existing raw timing input.
-- [ ] Add optional per-ID gaps and previous-payload differences.
-- [ ] Add explicit age to each graph memory entry.
+- [x] Implement the elapsed-recording-time ablation while preserving artifact timestamps.
+- [x] Implement normalized bus timing alongside the existing raw timing input.
+- [x] Add optional per-ID gaps and previous-payload differences.
+- [x] Add explicit age to each graph memory entry.
 - [ ] Evaluate individual changes before combining them.
+
+### October 27 implementation
+
+The features are opt-in through `EventGraphMambaConfig`: `use_elapsed_time`,
+`timing_mode`, `use_id_gap`, `payload_context` (`none`, `delta`, `xor`, `both`),
+and `graph_age`. Changed feature/state semantics require model schema 2; defaults
+retain schema-1 behavior and checkpoint loading. Per-ID observation features
+additionally require `can_event` representation schema 2, which prepares raw
+predecessor metadata without changing the lossless on-disk cache schema.
+
+Timing normalization fits only reviewed, verified-normal `train_query` recordings.
+It uses at most 65,536 deterministic evenly spaced pairs per recording: median
+positive gap as the `log1p` scale, log-space median/IQR, and a training-only 99.9th
+percentile clip (at least the scale). Near-zero IQR falls back to unit spread.
+Per-ID distributions require `timing_min_support` sampled pairs (default 32);
+unsupported IDs use a pooled same-ID-gap distribution and an explicit support
+indicator. First-seen rows have zero gap features and a separate first-seen mask.
+Fitted tables are checkpoint buffers; evaluation never refits them. The numeric
+ID tables pool reviewed source vehicles and do not assert semantic alignment.
+
+Delta/XOR inputs compare only bytes present in both observations. They feed the
+current observation encoder; the same-frame payload forecast consumes preceding
+encoder states and current header/timing only. Graph attention subtracts
+`softplus(age_decay) * log1p(age_seconds / graph_age_scale)` from valid preceding
+node logits; physical timestamp subtraction remains FP64. All nodes and existing
+capacity guards are retained.
+
+`scripts/event_context_ablation.py OUTPUT --seed 42` generates seven configs:
+baseline, no elapsed time, normalized bus gap, per-ID gap, payload delta,
+payload XOR, and graph age. It preserves the base run's data, training budget,
+and objective settings, and does not submit jobs. Repeat with seeds 43 and 44 in
+separate directories. Correctness/smoke validation is separate from the pending
+full held-out quality comparisons; no detection gain is claimed.
+
+Validation on October 27 passed 120 full-suite tests on A100 and 98 CPU-selected
+tests with CUDA hidden. The focused checks cover physical predecessor oracles,
+tied clocks, variable byte validity, unseen-ID fallback, training-only fitting,
+future/current-payload causality, independent CPU/CUDA output/state/gradient
+parity, corrupted/incompatible checkpoints, and exact optimizer/RNG resume.
+A combined-feature public Ray/Lightning GPU fit passed. A schema-1 checkpoint
+created by the pre-refactor source produced identical outputs through the current
+default model when checked on the same hardware. A bounded synthetic gate passed
+one/two-stream parity and exact coverage of 32 rows per arm with identical initial
+weights; its timings are not production-throughput evidence. Receipts are under
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-context-validation-nwg6n_ik/`.
+Ruff, documentation symbol checks, strict MkDocs, wheel building, and lock checks
+also passed.
 
 **Hypothesis:** the current global encoder spends capacity reconstructing local
 timing and value relationships; elapsed time may also provide an attack-schedule

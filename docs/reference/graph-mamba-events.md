@@ -11,6 +11,50 @@ and checkpoint identity; snapshot weights and calibration cannot be loaded into
 it. Adding this path does not establish improved attack detection, and no full
 encoder fit has been run as part of implementing it.
 
+## Optional local-context experiments
+
+The default input and model remain schema 1. Section 4 of
+`MODEL_IMPROVEMENT_PLAN.md` adds independently selectable experiments:
+
+| Model setting | Default | Experiment |
+| --- | --- | --- |
+| `use_elapsed_time` | `true` | Set `false` to omit elapsed recording time from both encoder and forecast header. Artifact timestamps remain intact. |
+| `timing_mode` | `raw` | `normalized` uses training-fitted robust log bus gaps. |
+| `use_id_gap` | `false` | Add normalized same-ID gap, normalizer support, and first-seen indicators to the header. |
+| `payload_context` | `none` | `delta`, `xor`, or `both` add valid preceding-byte comparisons to the observation encoder. |
+| `graph_age` | `false` | Subtract a learned nonnegative log-age bias from preceding-node attention logits. |
+| `graph_age_scale` | `1.0` | Physical-second scale for graph age; used only with `graph_age`. |
+| `timing_min_support` | `32` | Minimum sampled preceding-ID pairs for an ID-specific timing distribution. |
+
+Changed features require model `schema_version: 2`. The `use_id_gap` and
+`payload_context` experiments additionally require representation
+`schema_version: 2` at both the top level and `config.data.representation_cfg`.
+Representation 2 prepares same-ID predecessor indices and raw context across
+chunks without changing the lossless on-disk caches. Its persistent index costs
+eight bytes per event; sorting needs additional temporary CPU memory during setup.
+
+Normalizers fit only verified-normal `train_query` captures, using at most 65,536
+deterministic evenly spaced pairs per capture. They apply `log1p(gap / scale)`
+with median positive-gap scale, robust median/IQR centering, and a frozen 99.9th
+percentile clip at least as large as the scale. Near-zero IQR uses unit spread.
+Supported numeric IDs have their own tables; other IDs use the pooled same-ID-gap
+table and a false support indicator. These are pooled source statistics, not
+claims of common ID semantics across vehicles. Fitted tables are checkpoint
+buffers, validated on load and never fitted from evaluation traffic.
+
+Previous-byte validity requires that both payloads contain the byte. First-seen
+IDs have no preceding bytes, even when padded storage contains zeros. Current
+delta/XOR features affect classification through the current encoder state;
+the same-frame payload forecast uses only preceding states and current header.
+Graph ages subtract FP64 physical timestamps in physical row order, including
+ties, before converting log-age features to model precision.
+
+Generate matched baseline/individual-feature configs with
+`python scripts/event_context_ablation.py OUTPUT --seed 42`. Seeds 43 and 44
+use separate output directories. The generator does not submit jobs. Quality
+comparisons and feature promotion remain pending; baseline throughput numbers
+below do not measure these opt-in experiments.
+
 ## Input contract
 
 One event contains the numeric CAN arbitration ID, observed payload bytes,

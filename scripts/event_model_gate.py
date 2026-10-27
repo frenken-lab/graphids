@@ -102,7 +102,10 @@ def benchmark(
             )
     records = ordered + [r for r in records if r not in ordered]
     events = [
-        EventRecording(materialize_events(r, Path(cfg.config["data"]["cache_root"])))
+        EventRecording(
+            materialize_events(r, Path(cfg.config["data"]["cache_root"])),
+            local_context=cfg.representation_cfg.schema_version == 2,
+        )
         for r in records
     ]
     # Include a complete, identical bounded cohort in every repetition, even
@@ -315,7 +318,17 @@ def benchmark(
             torch.manual_seed(42),
             torch.cuda.manual_seed_all(42),
         )
-        model = build_component(model_spec).cuda().train()
+        from types import SimpleNamespace
+
+        model = build_component(model_spec)
+        model.prepare_from_datamodule(
+            SimpleNamespace(
+                manifest=manifest,
+                representation_cfg=cfg.representation_cfg,
+                event_recordings={r.recording.key: r for r in events},
+            )
+        )
+        model = model.cuda().train()
         optimizer = model.configure_optimizers()
         # All configurations traverse the same bounded cohort, with continuous
         # prefixes and separate histories. Limit each stream to an equal prefix.
@@ -705,6 +718,10 @@ def public_smoke(output, *, selected_config=None):
 
         selected = ExperimentConfig.from_yaml(selected_config)
         config["config"]["model"] = dict(selected.config["model"])
+        config["representation_cfg"] = asdict(selected.representation_cfg)
+        config["config"]["data"]["representation_cfg"] = asdict(
+            selected.representation_cfg
+        )
         for key in (
             "chunk_events",
             "stream_batch_size",

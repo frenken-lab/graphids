@@ -9,7 +9,7 @@ from graphids.data.representation import CANEventRepresentationConfig
 
 
 class CANEventDataConfig(BaseModel):
-    """Validated settings shared by YAML construction and the data module."""
+    """Data settings; representation schema 2 enables causal per-ID context."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["can_event_dm"] = "can_event_dm"

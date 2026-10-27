@@ -36,6 +36,7 @@ class EventGraphMambaState:
     ids: tuple[int, ...] = ()
     nodes: torch.Tensor | None = None
     previous_bus: torch.Tensor | None = None
+    node_timestamps: torch.Tensor | None = None
 
 
 class EventGraphMamba(pl.LightningModule):
@@ -55,6 +56,13 @@ class EventGraphMamba(pl.LightningModule):
         positive_weight: float = 1.0,
         node_capacity: int = 512,
         max_graph_tokens: int = defaults.MAX_GRAPH_TOKENS,
+        use_elapsed_time: bool = True,
+        timing_mode: str = "raw",
+        use_id_gap: bool = False,
+        payload_context: str = "none",
+        graph_age: bool = False,
+        graph_age_scale: float = 1.0,
+        timing_min_support: int = 32,
         schema_version: int = 1,
     ):
         super().__init__()
@@ -72,12 +80,25 @@ class EventGraphMamba(pl.LightningModule):
             positive_weight=positive_weight,
             node_capacity=node_capacity,
             max_graph_tokens=max_graph_tokens,
+            use_elapsed_time=use_elapsed_time,
+            timing_mode=timing_mode,
+            use_id_gap=use_id_gap,
+            payload_context=payload_context,
+            graph_age=graph_age,
+            graph_age_scale=graph_age_scale,
+            timing_min_support=timing_min_support,
             schema_version=schema_version,
         )
         self.save_hyperparameters(cfg.model_dump(exclude={"type"}))
         # Exact frame fields encoded numerically: bytes, byte-presence masks,
         # all 29 ID bits, byte length, elapsed time, preceding interarrival time.
-        self.input_proj = nn.Linear(48, cfg.width)
+        header_width = 32 - int(not cfg.use_elapsed_time) + 3 * int(cfg.use_id_gap)
+        context_width = 0
+        if cfg.payload_context != "none":
+            context_width = 8 + int(not cfg.use_id_gap)
+            context_width += 8 * (cfg.payload_context in ("delta", "both"))
+            context_width += 64 * (cfg.payload_context in ("xor", "both"))
+        self.input_proj = nn.Linear(16 + header_width + context_width, cfg.width)
         self.norms = nn.ModuleList(nn.LayerNorm(cfg.width) for _ in range(cfg.layers))
         if cfg.backend == "official":
             from graphids.runtime_checks import assert_mamba_backend
@@ -112,10 +133,17 @@ class EventGraphMamba(pl.LightningModule):
         # Header/current arrival are known; current payload is absent from every
         # path feeding this forecast. Predictions precede the frame-state update.
         self.payload_head = nn.Sequential(
-            nn.Linear(cfg.width * 2 + 32, cfg.width),
+            nn.Linear(cfg.width * 2 + header_width, cfg.width),
             nn.SiLU(),
             nn.Linear(cfg.width, 8 * 256),
         )
+        if cfg.graph_age:
+            self.age_decay = nn.Parameter(torch.zeros(()))
+        if cfg.timing_mode == "normalized" or cfg.use_id_gap:
+            self.register_buffer("timing_ids", torch.empty(0, dtype=torch.long))
+            self.register_buffer(
+                "timing_statistics", torch.empty((0, 4), dtype=torch.float64)
+            )
         self.automatic_optimization = False
         self._training_states = {}
         self._epoch_complete = True
@@ -134,20 +162,121 @@ class EventGraphMamba(pl.LightningModule):
             raise ValueError(
                 "event checkpoint source manifest differs from current data"
             )
+        if (
+            self.hparams.use_id_gap or self.hparams.payload_context != "none"
+        ) and dm.representation_cfg.schema_version != 2:
+            raise ValueError(
+                "per-ID context requires can_event representation schema_version=2"
+            )
+        if (
+            self.hparams.timing_mode == "normalized" or self.hparams.use_id_gap
+        ) and not len(self.timing_statistics):
+            from graphids.data.context import fit_timing_statistics
+
+            keys, statistics = fit_timing_statistics(
+                dm.event_recordings.values(),
+                min_support=self.hparams.timing_min_support,
+            )
+            device = self.timing_statistics.device
+            self.timing_ids = torch.as_tensor(keys, device=device)
+            self.timing_statistics = torch.as_tensor(statistics, device=device)
         self._source_manifest_digest = digest
 
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Fitted supported IDs vary by source cohort; buffers are checkpoint-owned.
+        if self.hparams.timing_mode == "normalized" or self.hparams.use_id_gap:
+            keys = state_dict.get(prefix + "timing_ids")
+            statistics = state_dict.get(prefix + "timing_statistics")
+            if (
+                keys is not None
+                and statistics is not None
+                and (
+                    keys.ndim != 1
+                    or statistics.shape != (len(keys) + 2, 4)
+                    or not torch.isfinite(statistics).all()
+                    or not (statistics[:, (0, 2, 3)] > 0).all()
+                    or not ((keys >= 0) & (keys < 2**29)).all()
+                    or not (keys[1:] > keys[:-1]).all()
+                )
+            ):
+                raise ValueError("invalid fitted timing statistics in checkpoint")
+            for name in ("timing_ids", "timing_statistics"):
+                if prefix + name in state_dict:
+                    getattr(self, name).resize_(state_dict[prefix + name].shape)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    @staticmethod
+    def _normalize_gap(gaps, statistics):
+        scale, center, spread, clip = statistics.unbind(-1)
+        return (
+            (torch.log1p(torch.minimum(gaps, clip) / scale) - center) / spread
+        ).float()
+
+    def _id_gap_features(self, batch):
+        context = batch.context
+        supported = torch.zeros_like(context.seen)
+        index = torch.ones_like(batch.ids)
+        if len(self.timing_ids):
+            position = torch.searchsorted(self.timing_ids, batch.ids).clamp_max(
+                len(self.timing_ids) - 1
+            )
+            supported = (self.timing_ids[position] == batch.ids) & context.seen
+            index = torch.where(supported, position + 2, index)
+        gap = self._normalize_gap(context.gaps, self.timing_statistics[index])
+        return torch.stack(
+            (gap * context.seen, supported.float(), (~context.seen).float()), -1
+        )
+
     def fields(self, batch):
+        local = self.hparams.use_id_gap or self.hparams.payload_context != "none"
+        if local and batch.context is None:
+            raise ValueError("batch lacks representation-v2 per-ID context")
+        if (
+            self.hparams.timing_mode == "normalized" or self.hparams.use_id_gap
+        ) and not len(self.timing_statistics):
+            raise ValueError(
+                "prepare timing statistics from verified-normal training data first"
+            )
         bits = (
             (batch.ids[:, None] >> torch.arange(29, device=batch.ids.device)) & 1
         ).float()
         mask = torch.arange(8, device=batch.ids.device)[None] < batch.lengths[:, None]
         # Scaling is invertible for every byte and length; no message aggregates.
-        header = torch.cat(
-            (bits, batch.lengths[:, None].float() / 8, batch.times.float()), -1
-        )
-        return torch.cat(
-            (batch.payload.float() / 255, mask.float(), header), -1
-        ), header
+        gap = batch.times[:, 1]
+        if self.hparams.timing_mode == "normalized":
+            gap = self._normalize_gap(gap, self.timing_statistics[0])
+        timing = [gap[:, None].float()]
+        if self.hparams.use_elapsed_time:
+            timing.insert(0, batch.times[:, :1].float())
+        header = [bits, batch.lengths[:, None].float() / 8, *timing]
+        if self.hparams.use_id_gap:
+            header.append(self._id_gap_features(batch))
+        header = torch.cat(header, -1)
+        fields = [batch.payload.float() / 255, mask.float(), header]
+        if self.hparams.payload_context != "none":
+            context = batch.context
+            valid = (
+                mask
+                & (
+                    torch.arange(8, device=batch.ids.device)[None]
+                    < context.lengths[:, None]
+                )
+                & context.seen[:, None]
+            )
+            fields.append(valid.float())
+            if not self.hparams.use_id_gap:
+                fields.append((~context.seen).float()[:, None])
+            if self.hparams.payload_context in ("delta", "both"):
+                fields.append(
+                    (batch.payload.float() - context.payload.float()) / 255 * valid
+                )
+            if self.hparams.payload_context in ("xor", "both"):
+                xor = batch.payload ^ context.payload
+                bits = (
+                    (xor[:, :, None].long() >> torch.arange(8, device=xor.device)) & 1
+                ).float()
+                fields.append((bits * valid[:, :, None]).flatten(1))
+        return torch.cat(fields, -1), header
 
     def _routing(self, batch, state):
         from graphids.data.events import prepare_routing
@@ -190,6 +319,13 @@ class EventGraphMamba(pl.LightningModule):
         return route.ids, route.previous, route.own, route.final
 
     @staticmethod
+    def _timestamp_bank(state, batch):
+        preceding = state.node_timestamps
+        if preceding is None:
+            preceding = batch.timestamps[:0]
+        return torch.cat((preceding, batch.timestamps))
+
+    @staticmethod
     def _gather_rows(bank, index):
         # index_select uses a dedicated index-add backward rather than the
         # generic multidimensional indexing gradient kernel (profiled bottleneck).
@@ -197,7 +333,7 @@ class EventGraphMamba(pl.LightningModule):
             *index.shape, bank.shape[-1]
         )
 
-    def _readout_batched(self, h, header, states, routes):
+    def _readout_batched(self, h, header, states, routes, batches):
         """Project packed banks once; attend within each stream under 256 MiB."""
         width = h.shape[-1]
         banks = [
@@ -212,18 +348,21 @@ class EventGraphMamba(pl.LightningModule):
         # that stream's gradient buffer, while projections remain batched.
         keys, values = self.key(bank).split(lengths), self.value(bank).split(lengths)
         aggregates, previous_ids, nodes = [], [], []
-        for query, key, value, history, route in zip(
-            self.query(h), keys, values, banks, routes, strict=True
+        for query, key, value, history, route, batch, state in zip(
+            self.query(h), keys, values, banks, routes, batches, states, strict=True
         ):
             ids, previous, own, final = route
             previous, own, final = (
                 torch.as_tensor(index, device=h.device)
                 for index in (previous, own, final)
             )
+            if self.hparams.graph_age:
+                timestamps = self._timestamp_bank(state, batch)
             # Two gathered banks plus attention/backward workspace per tile.
-            tile = max(
-                1, _GRAPH_WORKSPACE_BYTES // (4 * len(ids) * width * h.element_size())
-            )
+            bytes_per_node = 4 * width * h.element_size()
+            if self.hparams.graph_age:
+                bytes_per_node += 24  # FP64 age/log intermediates and FP32 bias
+            tile = max(1, _GRAPH_WORKSPACE_BYTES // (len(ids) * bytes_per_node))
             tiles = []
             for lo in range(0, len(query), tile):
                 index = previous[lo : lo + tile]
@@ -232,6 +371,15 @@ class EventGraphMamba(pl.LightningModule):
                 k = self._gather_rows(key, index)
                 logits = torch.bmm(k, query[lo : lo + tile, :, None]).squeeze(-1)
                 logits = logits / math.sqrt(width)
+                if self.hparams.graph_age:
+                    age = (
+                        batch.timestamps[lo : lo + tile, None] - timestamps[index]
+                    ).clamp_min(0)
+                    logits = (
+                        logits
+                        - F.softplus(self.age_decay)
+                        * torch.log1p(age / self.hparams.graph_age_scale).float()
+                    )
                 weights = logits.masked_fill(
                     ~mask, torch.finfo(logits.dtype).min
                 ).softmax(-1)
@@ -276,6 +424,15 @@ class EventGraphMamba(pl.LightningModule):
         return outputs[0]
 
     def _validate_state(self, batch, state):
+        if (
+            self.hparams.graph_age
+            and state.nodes is not None
+            and (
+                state.node_timestamps is None
+                or len(state.node_timestamps) != len(state.ids)
+            )
+        ):
+            raise ValueError("age-aware graph state lacks matching node timestamps")
         if state.recording:
             if (state.recording, state.source_digest) != (
                 batch.recording,
@@ -329,6 +486,18 @@ class EventGraphMamba(pl.LightningModule):
                 for name in ("ids", "lengths", "times", "payload")
             }
         )
+        packed.context = None
+        if self.hparams.use_id_gap or self.hparams.payload_context != "none":
+            from graphids.data.events import EventLocalContext
+
+            if any(b.context is None for b in batches):
+                raise ValueError("batch lacks representation-v2 per-ID context")
+            packed.context = EventLocalContext(
+                **{
+                    name: torch.cat([getattr(b.context, name) for b in batches])
+                    for name in ("gaps", "payload", "lengths", "seen")
+                }
+            )
         fields, header = self.fields(packed)
         h = self.input_proj(fields).reshape(len(batches), len(batches[0].ids), -1)
         header = header.reshape(len(batches), len(batches[0].ids), -1)
@@ -351,7 +520,9 @@ class EventGraphMamba(pl.LightningModule):
             )
             caches.append((conv, memory))
             h = h + self.dropout(out)
-        outputs, nodes_by_stream = self._readout_batched(h, header, states, routes)
+        outputs, nodes_by_stream = self._readout_batched(
+            h, header, states, routes, batches
+        )
         following = []
         for i, batch in enumerate(batches):
             ids, nodes = routes[i][0], nodes_by_stream[i]
@@ -371,6 +542,9 @@ class EventGraphMamba(pl.LightningModule):
                     ids,
                     learn(nodes),
                     learn(h[i, -1]),
+                    self._timestamp_bank(states[i], batch)[routes[i][3]]
+                    if self.hparams.graph_age
+                    else None,
                 )
             )
         return outputs, following
@@ -615,12 +789,16 @@ class EventGraphMamba(pl.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         import random
 
+        if (
+            self.hparams.timing_mode == "normalized" or self.hparams.use_id_gap
+        ) and not len(self.timing_statistics):
+            raise ValueError("cannot checkpoint unfitted timing statistics")
         if not self._epoch_complete:
             raise ValueError(
                 "mid-epoch checkpoint unsupported; save after complete recording coverage"
             )
         checkpoint["event_input_contract"] = dict(
-            schema_version=1,
+            schema_version=self.hparams.schema_version,
             source_manifest_digest=self._source_manifest_digest,
             model_config=dict(self.hparams),
             epoch_boundary=True,
@@ -636,7 +814,7 @@ class EventGraphMamba(pl.LightningModule):
 
     def _data_identity(self):
         dm = self.trainer.datamodule
-        return {
+        identity = {
             name: getattr(dm, name)
             for name in (
                 "chunk_events",
@@ -644,6 +822,9 @@ class EventGraphMamba(pl.LightningModule):
                 "effective_batch_events",
             )
         }
+        if self.hparams.schema_version == 2:
+            identity["representation_schema"] = dm.representation_cfg.schema_version
+        return identity
 
     def on_train_start(self):
         contract = self._resume_contract
@@ -662,7 +843,7 @@ class EventGraphMamba(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint):
         contract = checkpoint.get("event_input_contract", {})
-        if contract.get("schema_version") != 1:
+        if contract.get("schema_version") != self.hparams.schema_version:
             raise ValueError(
                 "checkpoint lacks event input identity; snapshot weights are incompatible"
             )
@@ -678,7 +859,9 @@ class EventGraphMamba(pl.LightningModule):
                 "mid-epoch/legacy resume unsupported; use an epoch-boundary event checkpoint"
             )
         saved_config = dict(contract.get("model_config", {}))
-        saved_config.setdefault("positive_weight", 1.0)
+        saved_config = EventGraphMambaConfig.model_validate(saved_config).model_dump(
+            exclude={"type"}
+        )
         if saved_config != dict(self.hparams):
             raise ValueError("checkpoint model configuration differs")
         self._resume_contract = contract

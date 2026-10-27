@@ -167,9 +167,16 @@ class FitRunPayload(_StrictModel):
         if self.data.get("type") == "can_event_dm":
             from graphids.data.config import CANEventDataConfig
 
-            CANEventDataConfig.model_validate(self.data)
+            data_config = CANEventDataConfig.model_validate(self.data)
             if self.model.get("type") != "event_graph_mamba":
                 raise ValueError("can_event_dm requires event_graph_mamba")
+            if (
+                self.model.get("use_id_gap", False)
+                or self.model.get("payload_context", "none") != "none"
+            ) and data_config.representation_cfg.schema_version != 2:
+                raise ValueError(
+                    "per-ID context requires can_event representation schema_version=2"
+                )
             if (
                 self.trainer.get("devices", 1) != 1
                 or self.trainer.get("num_nodes", 1) != 1

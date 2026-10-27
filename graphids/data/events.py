@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from graphids import event_defaults as defaults
 from graphids.data.config import CANEventDataConfig
+from graphids.data.context import previous_rows
 from graphids.data.recordings import (
     CANRecordingManifest,
     Recording,
@@ -111,7 +112,7 @@ class _TensorFields:
             **{
                 name: transform(value)
                 for name, value in vars(self).items()
-                if isinstance(value, torch.Tensor | EventRouting)
+                if isinstance(value, torch.Tensor | EventRouting | EventLocalContext)
             },
         )
 
@@ -165,6 +166,19 @@ def prepare_routing(recording, digest, start, event_ids, incoming_ids):
 
 
 @dataclass
+class EventLocalContext(_TensorFields):
+    """Raw preceding same-ID observations; first-seen rows have seen=False."""
+
+    gaps: torch.Tensor  # FP64 physical seconds
+    payload: torch.Tensor  # preceding uint8 bytes; lengths define validity
+    lengths: torch.Tensor
+    seen: torch.Tensor
+
+    def slice(self, start, stop):
+        return replace(self, **{k: v[start:stop] for k, v in vars(self).items()})
+
+
+@dataclass
 class CANEventBatch(_TensorFields):
     recording: str
     source_digest: str
@@ -185,6 +199,7 @@ class CANEventBatch(_TensorFields):
     recording_end: bool = False
     routing: EventRouting | None = None
     host_timestamps: tuple[float, ...] = ()
+    context: EventLocalContext | None = None
 
     def slice(self, start, stop):
         if not 0 <= start < stop <= len(self.ids):
@@ -196,6 +211,9 @@ class CANEventBatch(_TensorFields):
             routing_ids=self.routing_ids[start:stop],
             routing=None,
             host_timestamps=self.host_timestamps[start:stop],
+            context=self.context.slice(start, stop)
+            if self.context is not None
+            else None,
             **{
                 name: value[start:stop]
                 for name, value in vars(self).items()
@@ -205,7 +223,7 @@ class CANEventBatch(_TensorFields):
 
 
 class EventRecording:
-    def __init__(self, path):
+    def __init__(self, path, *, local_context=False):
         self.path = Path(path)
         metadata = json.loads((self.path / "metadata.json").read_text())
         self.recording = Recording(**metadata["recording"])
@@ -221,6 +239,9 @@ class EventRecording:
         self.first_ids = unique[order]
         if any(len(a) != self.count for a in self.arrays.values()):
             raise ValueError("incomplete event cache")
+        self.previous_rows = (
+            previous_rows(self.arrays["ids"]) if local_context else None
+        )
 
     def batch(self, start, stop, *, score_start=None):
         if not 0 <= start < stop <= self.count:
@@ -260,6 +281,16 @@ class EventRecording:
             batch.routing_ids,
             tuple(self.first_ids[self.first_rows < start].tolist()),
         )
+        if self.previous_rows is not None:
+            previous = self.previous_rows[start:stop]
+            seen = previous >= 0
+            rows = previous.clip(min=0)
+            batch.context = EventLocalContext(
+                torch.from_numpy(np.where(seen, physical - arrays["times"][rows], 0)),
+                torch.from_numpy(np.array(arrays["payload"][rows])),
+                torch.from_numpy(np.where(seen, arrays["lengths"][rows], 0)),
+                torch.from_numpy(seen.copy()),
+            )
         return batch
 
 
@@ -405,7 +436,7 @@ class EventTrainingLoader(DataLoader):
                 window = upcoming
                 for group in window.groups:
                     for batch in group:
-                        for obj in (batch, batch.routing):
+                        for obj in (batch, batch.routing, batch.context):
                             if obj is not None:
                                 for value in vars(obj).values():
                                     if isinstance(value, torch.Tensor):
@@ -419,7 +450,7 @@ class EventTrainingLoader(DataLoader):
 
 
 class CANEventDataModule(pl.LightningDataModule):
-    """Explicit source-only learning path; no handcrafted reference features.
+    """Explicit source-only learning path with optional causal observation context.
 
     Continuous chronological training and evaluation on one device.
     Each optimizer window declares independent objective target totals.
@@ -493,7 +524,8 @@ class CANEventDataModule(pl.LightningDataModule):
             if rec.role not in ("train_query", "val_query"):
                 continue
             recordings[rec.key] = EventRecording(
-                materialize_events(rec, self.cache_root)
+                materialize_events(rec, self.cache_root),
+                local_context=self.representation_cfg.schema_version == 2,
             )
         if not recordings:
             raise ValueError("no reviewed source query recordings selected")

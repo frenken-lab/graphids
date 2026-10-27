@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graphids import event_defaults as defaults
 
@@ -25,7 +25,29 @@ class EventGraphMambaConfig(BaseModel):
     positive_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     node_capacity: int = Field(default=512, ge=1)
     max_graph_tokens: int = Field(default=defaults.MAX_GRAPH_TOKENS, ge=1)
-    schema_version: Literal[1] = 1
+    use_elapsed_time: bool = True
+    timing_mode: Literal["raw", "normalized"] = "raw"
+    use_id_gap: bool = False
+    payload_context: Literal["none", "delta", "xor", "both"] = "none"
+    graph_age: bool = False
+    graph_age_scale: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    timing_min_support: int = Field(default=32, ge=1)
+    schema_version: Literal[1, 2] = 1
+
+    @model_validator(mode="after")
+    def validate_feature_schema(self):
+        changed = (
+            not self.use_elapsed_time
+            or self.timing_mode != "raw"
+            or self.use_id_gap
+            or self.payload_context != "none"
+            or self.graph_age
+        )
+        if changed and self.schema_version != 2:
+            raise ValueError(
+                "local-context and timing ablations require model schema_version=2"
+            )
+        return self
 
     def build(self):
         from graphids.models.event_graph_mamba import EventGraphMamba
