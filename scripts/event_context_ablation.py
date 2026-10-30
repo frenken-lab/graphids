@@ -1,10 +1,14 @@
 """Generate isolated Section 4 ablations without submitting training jobs."""
 
 import argparse
+import sys
 from copy import deepcopy
 from pathlib import Path
 
 import yaml
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def experiments(base, *, seed=42):
@@ -45,12 +49,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--base", type=Path,
+        help="Inherit a reviewed control config and its training budget/objectives",
+    )
     args = parser.parse_args()
     preset = (
         Path(__file__).resolve().parents[1]
         / "configs/experiments/graph_mamba_events_source.yml"
     )
-    base = yaml.safe_load(preset.read_text())
+    from graphids.exp.config import load_experiment_yaml
+    from scripts.event_ablation import experiments as controls
+
+    base = load_experiment_yaml(args.base or preset)
+    if args.base is None:
+        # Use exactly the ordinary-BCE one-stream control's 25-epoch budget.
+        base = next(controls(base, 1.0, seed=args.seed))
     args.output.mkdir(parents=True, exist_ok=True)
     for cfg in experiments(base, seed=args.seed):
         path = args.output / f"{cfg['experiment_name']}.yml"

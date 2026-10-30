@@ -3,7 +3,7 @@
 import pytest
 
 from graphids.data.config import CANEventDataConfig
-from graphids.exp.config import ExperimentConfig, FitRunPayload
+from graphids.exp.config import ExperimentConfig, RunPayload
 
 
 def test_microbatch_limits_agree_for_config_and_direct_construction():
@@ -48,11 +48,11 @@ def test_retired_loss_override_is_rejected_at_config_boundaries(tmp_path):
     with pytest.raises(ValueError, match="loss_fn is retired"):
         ExperimentConfig.from_yaml(path)
     with pytest.raises(ValueError, match="loss_fn is retired"):
-        FitRunPayload(**legacy)
+        RunPayload(**legacy)
     experiment = ExperimentConfig(experiment_name="run", dataset="toy")
     with pytest.raises(ValueError, match="loss_fn is retired"):
         experiment.build_run(name="run", stage="fit", config=legacy)
     # Older resolved payloads emitted this unused field as null.
-    assert "loss_fn" not in FitRunPayload(loss_fn=None).model_dump()
+    assert "loss_fn" not in RunPayload(loss_fn=None).model_dump()
     model = EventGraphMambaConfig(width=8, backend="reference").build()
     assert "loss_fn" not in model.hparams

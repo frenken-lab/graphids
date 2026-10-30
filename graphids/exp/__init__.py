@@ -1,1 +1,1 @@
-"""Experiment config, Ray launch, SLURM submit, journals, and MLflow ingest."""
+"""Validated configs, run execution, durable records, Slurm, and MLflow views."""

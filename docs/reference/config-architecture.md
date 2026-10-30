@@ -80,7 +80,7 @@ Important classes:
 
 - `ExperimentConfig`: top-level YAML contract.
 - `RunConfig`: fully resolved single launch.
-- `FitRunPayload`: `data`, `model`, `trainer`, `callbacks`, optional `compile` and `ckpt_path`.
+- `RunPayload`: `data`, `model`, `trainer`, `callbacks`, optional `compile` and `ckpt_path`.
 - `ResourceConfig`: cluster/resource metadata.
 - `OutputConfig`: run directory, journal, artifact, and checkpoint paths.
 
@@ -106,68 +106,89 @@ Ray launch instantiation accepts either:
 - dictionaries with `class_path` and optional `init_args`, resolved by
   importlib.
 
-`graphids.exp.runtime` owns resolution, seeding, model preparation, callbacks,
-and trainer kwargs for Ray launches and bounded event benchmarks.
+`graphids.exp.run` owns component construction, seeding, model preparation,
+callbacks, Lightning execution and Ray launch. It consumes a resolved `RunConfig`;
+only the Ray process boundary serializes and revalidates that object. Bounded
+event benchmarks reuse the component builders.
 Direct data/model constructors reuse component validation, including checkpoint
 reconstruction. Builders propagate errors without argument filtering or retries.
 The event model owns its objectives: a non-null `loss_fn` setting is rejected
 when loading an experiment or resolved payload. Old payloads with `loss_fn: null`
 remain readable. A zero learning rate is supported for frozen-weight diagnostics.
-Import construction helpers from `graphids.exp.runtime`. This lets YAML use
+Import construction helpers from `graphids.exp.run`. This lets YAML use
 compact component specs for common objects and explicit class paths for
 callbacks without putting import logic in the YAML loader or CLI.
 
-## 4. Ray Dispatch
+## 4. Run execution and records
 
-`graphids.exp.ray_backend.launch_run(run)` owns driver-side execution and
-uses Ray Train. Each Ray worker runs the backend worker loop:
+The experiment package has six implementation modules:
 
-1. Translate GraphIDS resources/output settings to Ray Train configs.
-2. Start or connect to Ray.
-3. Run a `TorchTrainer`.
-4. In the worker, choose tracking mode from `GRAPHIDS_MLFLOW_MODE`.
-5. Write `.graphids/manifest.json`.
-6. Append `.graphids/events.jsonl`.
-7. In offline mode, write `.graphids/mlflow_ingest.json`.
-8. Build configured data/model/trainer objects and run `fit` or `test`.
-9. Mark the manifest and ingest payload `finished` or `failed`.
+| Module | Responsibility |
+| --- | --- |
+| `config.py` | YAML composition, validation, resolved configuration |
+| `run.py` | Component construction, Lightning execution, Ray launch |
+| `records.py` | Resolved input file, manifest, events and status summaries |
+| `slurm.py` | Single-node scripts, source snapshots, dependencies and submission |
+| `tracking.py` | MLflow tags, export and ingestion, including historical readers |
+| `results.py` | MLflow result queries and comparison views |
 
-Stage dispatch:
+`RunConfig` is configuration data. File writing and manifest construction belong
+in `records`; MLflow formatting belongs in `tracking`. The former `runtime`,
+`ray_backend`, `journal` and `ingest` modules have been replaced by these owners;
+Python callers should use the current module paths.
 
-| Stage | Ray action |
-|---|---|
-| `fit` | Build datamodule/model/callbacks, run `trainer.fit`. |
-| `test` | Build datamodule/model/callbacks, run `trainer.test`. |
+`run.launch_run(run)` passes a resolved config to one Ray `TorchTrainer` worker.
+`run.execute_run(run, ray=True)` records startup, builds and executes Lightning,
+and saves success or failure. `run_lightning` supports the same `fit`/`test`
+execution locally for diagnostics. Training dependencies remain lazy imports,
+so configuration inspection does not load Torch or Lightning.
 
-After `fit` and `test`, the Ray backend captures final `trainer.callback_metrics` into
-the returned run event payload and offline MLflow ingest payload. A separate
-`gx exp ingest <run_dir>` or `gx exp ingest-root <root>` command serializes
-completed runs into MLflow.
+Each run saves `resolved-run.yml` and `.graphids/manifest.json`. Schema-2 manifests
+hold authoritative status, metrics, result metadata and failure details. Events
+record lifecycle history without another copy of the final metrics. Logger and
+backend startup failures are recorded as failures as well as training failures.
+Ray reports use the result directly; execution does not read MLflow exports back.
 
-## 5. SLURM Submit
+Offline runs write no new `mlflow_ingest.json`. `gx exp ingest` derives the export
+from the saved config and schema-2 manifest. Historical schema-1 manifests and
+separate MLflow ingest files remain readable. Run paths, input YAML fields,
+model checkpoints and frame-score artifacts retain their existing contracts.
 
-`gx exp submit <yaml> -C ascend` uses `graphids.exp.slurm`:
+## 5. Slurm submission
 
-1. Validate the YAML by building a `RunConfig`.
-2. Expand and save a standalone config under `{slurm_log_dir}/scripts/`, named
-   by experiment and configuration content hash.
-3. Render an sbatch script pointing to that snapshot and submit it with `sbatch`.
+`gx exp submit <yaml>` renders one node and one device; unsupported device counts
+fail before files are written or jobs submitted. Multi-node bootstrap branches
+have been removed. Cluster, partition, walltime and GRES overrides remain available.
 
-Later base or leaf edits do not change a queued job's configuration. Model
-source still comes from the selected code checkout.
+The public Python API separates preparation from side effects:
 
-The sbatch body starts a Ray head and workers inside the allocation, then runs
-the Ray driver:
+```python
+from graphids.exp.slurm import build_experiment_job, write_job, submit_script
 
-```bash
-cd /users/PAS2022/rf15/projects/lab/graphids
-source scripts/slurm/_preamble.sh
-python -m graphids exp launch /abs/path/to/config.yml --address "${RAY_ADDRESS}"
-source scripts/slurm/_epilog.sh
+job = build_experiment_job(
+    cfg,
+    source_root=frozen_source,
+    log_dir=logs,
+    modules=["cuda/12.8.1"],
+    preflight=[["python", "verify.py", "--suite", suite_path]],
+)
+write_job(job)
+receipt = submit_script(job.script_path, dependency="afterok:12345")
 ```
 
-`--dry-run` prints the script without submitting. The submit command has
-resource overrides for cluster, partition, walltime, gres, and node count.
+`build_experiment_job` validates once at preparation and returns the script plus
+its expanded, content-named config. Preflight argv is shell-quoted and runs before
+Ray starts. `write_job` writes both artifacts. `submit_script` handles parsable
+scheduler receipts and cancellation on invalid dependencies for either a training
+job or a recipe-specific gate/report script. `submit_experiment` combines these
+steps for the CLI. `--dry-run` prints without writing or submitting.
+
+`snapshot_source` freezes selected runtime source, including dirty and untracked
+code, plus a Git provenance receipt. It refuses to overwrite an existing snapshot;
+callers supply their runtime environment settings separately. `dependency_versions`
+records the Python environment. The quality-suite recipe uses these APIs and
+contains only its experiment definitions, provenance checks and scheduling policy.
+The CLI also accepts `--source-root` and `--dependency`.
 
 ## 6. Continuous event training
 

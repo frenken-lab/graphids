@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 import subprocess
 from collections.abc import Mapping
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,7 +16,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from graphids.data.representation import CANEventRepresentationConfig
-from graphids.exp.journal import RunManifest
 
 Stage = Literal["fit", "test"]
 
@@ -136,7 +134,7 @@ class ResourceConfig(_StrictModel):
     account: str | None = None
 
 
-class FitRunPayload(_StrictModel):
+class RunPayload(_StrictModel):
     """Typed payload for ``fit``/``test`` launches."""
 
     model: dict[str, Any] = Field(default_factory=dict)
@@ -177,17 +175,7 @@ class FitRunPayload(_StrictModel):
                 raise ValueError(
                     "per-ID context requires can_event representation schema_version=2"
                 )
-            if (
-                self.trainer.get("devices", 1) != 1
-                or self.trainer.get("num_nodes", 1) != 1
-            ):
-                raise ValueError(
-                    "the initial event input path requires one device and one node"
-                )
         return self
-
-
-RunPayload = FitRunPayload
 
 
 class OutputConfig(_StrictModel):
@@ -227,76 +215,20 @@ class RunConfig(_StrictModel):
     representation_cfg: CANEventRepresentationConfig = Field(
         default_factory=CANEventRepresentationConfig
     )
-    payload: RunPayload = Field(default_factory=FitRunPayload)
+    payload: RunPayload = Field(default_factory=RunPayload)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     outputs: OutputConfig
 
-    def write_config(self) -> Path:
-        """Persist the fully resolved run, independent of YAML base files."""
-        path = self.outputs.run_dir / "resolved-run.yml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False))
-        return path
-
-    def mlflow_tags(self) -> dict[str, str]:
-        tags = {
-            "graphids.phase": self.stage,
-            "graphids.group": self.stage,
-            "graphids.variant": self.name,
-            "graphids.stage": self.stage,
-            "graphids.run_dir": str(self.outputs.run_dir),
-            "graphids.git_sha": self.git_sha,
-        }
-        if self.dataset is not None:
-            tags["graphids.dataset"] = self.dataset
-        if self.seed is not None:
-            tags["graphids.seed"] = str(self.seed)
-        if self.plan_id is not None:
-            tags["graphids.plan_id"] = self.plan_id
-        tags["graphids.representation"] = self.representation_cfg.kind
-        return tags
-
-    def mlflow_hparams(self) -> dict[str, Any]:
-        return {
-            "graphids.stage": self.stage,
-            "graphids.dataset": self.dataset or "",
-            "graphids.seed": self.seed if self.seed is not None else -1,
-            "graphids.plan_id": self.plan_id or "",
-            "graphids.git_sha": self.git_sha,
-            "graphids.run_dir": str(self.outputs.run_dir),
-            "graphids.representation": self.representation_cfg.kind,
-            "graphids.representation_cfg": asdict(self.representation_cfg),
-            "graphids.payload": self.payload.model_dump(mode="json"),
-            **{
-                f"graphids.resource.{k}": v
-                for k, v in self.resources.model_dump(mode="json").items()
-            },
-        }
-
-    def journal_manifest(
-        self, *, status: str, failure: str | None = None
-    ) -> RunManifest:
-        return RunManifest(
-            run_id=self.name,
-            name=self.name,
-            stage=self.stage,
-            git_sha=self.git_sha,
-            run_dir=str(self.outputs.run_dir),
-            config={
-                "representation_cfg": asdict(self.representation_cfg),
-                "payload": self.payload.model_dump(mode="json"),
-                "resources": self.resources.model_dump(mode="json"),
-            },
-            outputs={
-                "journal_dir": str(self.outputs.journal_dir()),
-                "manifest": str(self.outputs.manifest_path()),
-                "events": str(self.outputs.events_path()),
-                "artifact_dir": str(self.outputs.artifact_path()),
-                "checkpoint_dir": str(self.outputs.checkpoint_path()),
-            },
-            status=status,
-            failure=failure,
-        )
+    @model_validator(mode="after")
+    def validate_execution(self):
+        if (
+            self.payload.trainer.get("devices", 1) != 1
+            or self.payload.trainer.get("num_nodes", 1) != 1
+        ):
+            raise ValueError("experiment execution requires one device and one node")
+        if self.resources.gpus_per_worker > 1:
+            raise ValueError("experiment execution supports at most one GPU")
+        return self
 
 
 class ExperimentConfig(_StrictModel):
@@ -372,7 +304,7 @@ class ExperimentConfig(_StrictModel):
                     "fit/test data.source.representation_cfg must match top-level "
                     "representation_cfg so run metadata and materialized data cannot drift"
                 )
-        payload = FitRunPayload.model_validate(
+        payload = RunPayload.model_validate(
             {
                 "model": cfg.get("model", {}),
                 "data": cfg.get("data", {}),

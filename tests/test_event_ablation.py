@@ -35,3 +35,29 @@ def test_matched_training_controls_and_classification_only_arm():
     ]
     assert arms[-1]["config"]["model"]["payload_weight"] == 0
     assert len(list(experiments(base, 46.660762196485265))) == 4
+
+
+def test_context_cli_defaults_match_controls_and_accept_a_selected_base(tmp_path):
+    import subprocess
+    import sys
+
+    from scripts.event_context_ablation import experiments as contexts
+
+    base = yaml.safe_load(Path(
+        "configs/experiments/graph_mamba_events_source.yml"
+    ).read_text())
+    control = next(experiments(base, 46.660762196485265, seed=44))
+    output = tmp_path / "default"
+    subprocess.run([
+        sys.executable, "scripts/event_context_ablation.py", str(output), "--seed", "44"
+    ], check=True, capture_output=True)
+    for path in output.glob("*.yml"):
+        cfg = yaml.safe_load(path.read_text())
+        assert cfg["seed"] == 44
+        assert cfg["config"]["trainer"] == control["config"]["trainer"]
+        assert cfg["config"]["data"]["effective_batch_events"] == 65536
+    control["config"]["model"]["positive_weight"] = 6.0
+    control["config"]["data"]["stream_batch_size"] = 4
+    for arm in contexts(control, seed=44):
+        assert arm["config"]["model"]["positive_weight"] == 6.0
+        assert arm["config"]["data"]["stream_batch_size"] == 4

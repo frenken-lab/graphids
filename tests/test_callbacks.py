@@ -171,3 +171,60 @@ def test_phase_metrics_count_windows_chunks_and_isolate_phase_lifetimes(
     assert callback.phase_summaries[-1]["scored_events"] == 0
     assert callback.phase_summaries[-1]["scored_seconds"] == 0.0
     assert isinstance(callback.phase_summaries[-1]["scored_seconds"], float)
+
+
+@pytest.mark.slurm
+@pytest.mark.parametrize("save_on_train_epoch_end", [True, False])
+def test_last_checkpoint_advances_when_validation_score_stops_improving(
+    tmp_path, save_on_train_epoch_end
+):
+    import lightning.pytorch as pl
+    from torch.utils.data import DataLoader
+
+    from graphids._fs import _sha256_file
+    from graphids.callbacks import Sha256ModelCheckpoint
+
+    class Plateau(pl.LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(()))
+
+        def training_step(self, batch, batch_idx):
+            return self.weight.square()
+
+        def validation_step(self, batch, batch_idx):
+            self.log("score", 1.0)
+
+        def configure_optimizers(self):
+            return torch.optim.SGD(self.parameters(), lr=0.1)
+
+    model = Plateau()
+    checkpoint = Sha256ModelCheckpoint(
+        dirpath=tmp_path / "checkpoints",
+        monitor="score",
+        mode="max",
+        save_top_k=1,
+        save_last=True,
+        save_on_train_epoch_end=save_on_train_epoch_end,
+    )
+    trainer = pl.Trainer(
+        accelerator="cpu",
+        devices=1,
+        max_epochs=3,
+        logger=False,
+        enable_progress_bar=False,
+        num_sanity_val_steps=0,
+        callbacks=[checkpoint],
+        default_root_dir=tmp_path,
+    )
+    data = DataLoader(torch.ones(1, 1), batch_size=1)
+    trainer.fit(model, train_dataloaders=data, val_dataloaders=data)
+    last = torch.load(checkpoint.last_model_path, weights_only=False)
+    best = torch.load(checkpoint.best_model_path, weights_only=False)
+    assert last["epoch"] == 2 and last["global_step"] == 3
+    assert best["epoch"] == 0
+    torch.testing.assert_close(
+        last["state_dict"]["weight"], model.weight, rtol=0, atol=0
+    )
+    path = tmp_path / "checkpoints/last.ckpt"
+    assert path.with_suffix(".ckpt.sha256").read_text().strip() == _sha256_file(path)

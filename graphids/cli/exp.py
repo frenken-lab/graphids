@@ -15,10 +15,10 @@ from rich.table import Table
 
 from graphids.cli.app import app
 from graphids.exp.config import ExperimentConfig
-from graphids.exp.ingest import discover_ingest_payloads, ingest_many, ingest_run
-from graphids.exp.journal import load_manifest
-from graphids.exp.ray_backend import launch_run
+from graphids.exp.records import load_manifest
+from graphids.exp.run import launch_run
 from graphids.exp.slurm import submit_experiment
+from graphids.exp.tracking import discover_runs, ingest_many, ingest_run
 
 exp_app = typer.Typer(
     name="exp",
@@ -31,7 +31,9 @@ console = Console()
 
 @exp_app.command("config")
 def config(
-    path: Annotated[Path, typer.Argument(help="YAML config file to validate as ExperimentConfig")],
+    path: Annotated[
+        Path, typer.Argument(help="YAML config file to validate as ExperimentConfig")
+    ],
 ) -> None:
     """Load a YAML config and validate it as ``ExperimentConfig``."""
     console.print_json(data=ExperimentConfig.from_yaml(path).model_dump(mode="json"))
@@ -42,7 +44,7 @@ def status(
     run_dir: Annotated[Path, typer.Argument(help="Run directory to inspect")],
 ) -> None:
     """Print manifest + latest event summary for one run."""
-    from graphids.exp.ray_backend import summarize_run
+    from graphids.exp.records import summarize_run
 
     summary = summarize_run(run_dir)
     if summary is None:
@@ -76,7 +78,9 @@ def manifest(
 @exp_app.command("launch")
 def launch(
     path: Annotated[Path, typer.Argument(help="YAML experiment config")],
-    address: Annotated[str | None, typer.Option("--address", help="Existing Ray cluster address")] = None,
+    address: Annotated[
+        str | None, typer.Option("--address", help="Existing Ray cluster address")
+    ] = None,
 ) -> None:
     """Launch one experiment config through Ray Train."""
     exp_cfg = ExperimentConfig.from_yaml(path)
@@ -96,23 +100,39 @@ def launch(
 @exp_app.command("submit")
 def submit(
     path: Annotated[Path, typer.Argument(help="YAML experiment config")],
-    cluster: Annotated[str | None, typer.Option("--cluster", "-C", help="SLURM cluster override")] = None,
-    partition: Annotated[str | None, typer.Option("--partition", "-p", help="SLURM partition override")] = None,
-    time_limit: Annotated[str | None, typer.Option("--time", "-t", help="SLURM walltime override")] = None,
-    gres: Annotated[str | None, typer.Option("--gres", help="SLURM gres override")] = None,
-    nodes: Annotated[int, typer.Option("--nodes", help="Number of SLURM nodes in the Ray allocation")] = 1,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the sbatch script without submitting")] = False,
+    cluster: Annotated[
+        str | None, typer.Option("--cluster", "-C", help="SLURM cluster override")
+    ] = None,
+    partition: Annotated[
+        str | None, typer.Option("--partition", "-p", help="SLURM partition override")
+    ] = None,
+    time_limit: Annotated[
+        str | None, typer.Option("--time", "-t", help="SLURM walltime override")
+    ] = None,
+    gres: Annotated[
+        str | None, typer.Option("--gres", help="SLURM gres override")
+    ] = None,
+    source_root: Annotated[
+        Path | None, typer.Option("--source-root", help="Frozen source checkout")
+    ] = None,
+    dependency: Annotated[
+        str | None, typer.Option("--dependency", help="Slurm dependency expression")
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the sbatch script without submitting"),
+    ] = False,
 ) -> None:
     """Submit one experiment YAML as a Ray Train SLURM job."""
     exp_cfg = ExperimentConfig.from_yaml(path)
     result = submit_experiment(
         exp_cfg,
-        path,
         cluster=cluster,
         partition=partition,
         time_limit=time_limit,
         gres=gres,
-        nodes=nodes,
+        source_root=source_root,
+        dependency=dependency,
         dry_run=dry_run,
     )
     if dry_run:
@@ -130,18 +150,32 @@ def submit(
 
 @exp_app.command("results")
 def results(
-    view: Annotated[str, typer.Option("--view", "-v", help="Result view in configs/result_views.yml")] = "any",
+    view: Annotated[
+        str,
+        typer.Option("--view", "-v", help="Result view in configs/result_views.yml"),
+    ] = "any",
     dataset: Annotated[
         list[str] | None,
-        typer.Option("--dataset", "-d", help="Dataset to query; repeat for multiple datasets"),
+        typer.Option(
+            "--dataset", "-d", help="Dataset to query; repeat for multiple datasets"
+        ),
     ] = None,
     variant: Annotated[
         list[str] | None,
-        typer.Option("--variant", help="Variant to include; repeat for multiple variants"),
+        typer.Option(
+            "--variant", help="Variant to include; repeat for multiple variants"
+        ),
     ] = None,
-    all_runs: Annotated[bool, typer.Option("--all", help="Show all matching runs, not latest per variant")] = False,
-    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
-    output_format: Annotated[str, typer.Option("--format", help="table or json")] = "table",
+    all_runs: Annotated[
+        bool,
+        typer.Option("--all", help="Show all matching runs, not latest per variant"),
+    ] = False,
+    tracking_uri: Annotated[
+        str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")
+    ] = None,
+    output_format: Annotated[
+        str, typer.Option("--format", help="table or json")
+    ] = "table",
 ) -> None:
     """Query configured MLflow result views."""
     from graphids.exp.results import query_result_view, result_rows_as_json, sort_rows
@@ -187,10 +221,19 @@ def results(
 
 @exp_app.command("ingest")
 def ingest(
-    run_dir: Annotated[Path, typer.Argument(help="Run directory with .graphids/mlflow_ingest.json")],
-    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
-    no_artifacts: Annotated[bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")] = False,
-    force: Annotated[bool, typer.Option("--force", help="Create a new MLflow run even if this run_dir was ingested")] = False,
+    run_dir: Annotated[Path, typer.Argument(help="Directory with saved run records")],
+    tracking_uri: Annotated[
+        str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")
+    ] = None,
+    no_artifacts: Annotated[
+        bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force", help="Create a new MLflow run even if this run_dir was ingested"
+        ),
+    ] = False,
 ) -> None:
     """Serialize one offline GraphIDS run into MLflow."""
     result = ingest_run(
@@ -204,15 +247,26 @@ def ingest(
 
 @exp_app.command("ingest-root")
 def ingest_root(
-    root: Annotated[Path, typer.Argument(help="Directory tree containing GraphIDS run directories")],
-    tracking_uri: Annotated[str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")] = None,
-    no_artifacts: Annotated[bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")] = False,
-    force: Annotated[bool, typer.Option("--force", help="Create new MLflow runs even if run_dirs were ingested")] = False,
+    root: Annotated[
+        Path, typer.Argument(help="Directory tree containing GraphIDS run directories")
+    ],
+    tracking_uri: Annotated[
+        str | None, typer.Option("--tracking-uri", help="Override MLflow tracking URI")
+    ] = None,
+    no_artifacts: Annotated[
+        bool, typer.Option("--no-artifacts", help="Skip artifact upload/copy")
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force", help="Create new MLflow runs even if run_dirs were ingested"
+        ),
+    ] = False,
 ) -> None:
     """Serialize all offline GraphIDS runs below a root into MLflow."""
-    payloads = discover_ingest_payloads(root)
+    runs = discover_runs(root)
     results = ingest_many(
-        payloads,
+        runs,
         tracking_uri=tracking_uri,
         log_artifacts=not no_artifacts,
         skip_existing=not force,

@@ -68,7 +68,7 @@ def verify_events(config, output):
     from pathlib import Path
 
     from graphids.exp.config import ExperimentConfig
-    from graphids.exp.runtime import build_component
+    from graphids.exp.run import build_component
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)

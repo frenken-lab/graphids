@@ -44,7 +44,9 @@ class ResultRow:
 def load_result_view(name: str, *, path: Path = DEFAULT_VIEW_PATH) -> dict[str, Any]:
     views = yaml.safe_load(path.read_text()) or {}
     if name not in views:
-        raise KeyError(f"unknown result view {name!r}; available: {', '.join(sorted(views))}")
+        raise KeyError(
+            f"unknown result view {name!r}; available: {', '.join(sorted(views))}"
+        )
     view = views[name] or {}
     return {
         "filter": dict(view.get("filter") or {}),
@@ -71,7 +73,9 @@ def _metric_value(metrics: dict[str, float], key: str) -> float | None:
     # configured names stable while tolerating older runs.
     fallbacks = []
     if key.startswith("test/test/"):
-        fallbacks.extend([key.removeprefix("test/test/"), "test/" + key.removeprefix("test/test/")])
+        fallbacks.extend(
+            [key.removeprefix("test/test/"), "test/" + key.removeprefix("test/test/")]
+        )
     if key.startswith("test/"):
         fallbacks.append(key.removeprefix("test/"))
     for candidate in fallbacks:
@@ -109,7 +113,9 @@ def query_result_view(
             exp = client.get_experiment_by_name(f"graphids/{dataset}/{group}")
             experiments = [] if exp is None else [exp]
         else:
-            experiments = client.search_experiments(filter_string=f"name LIKE 'graphids/{dataset}/%'")
+            experiments = client.search_experiments(
+                filter_string=f"name LIKE 'graphids/{dataset}/%'"
+            )
         filters = {**base_filter, "phase": phase, "status": status}
         filter_string = _filter_string(filters)
         seen: set[str] = set()
@@ -123,14 +129,19 @@ def query_result_view(
             for run in runs:
                 tags = run.data.tags
                 row_group = tags.get("graphids.group") or exp.name.rsplit("/", 1)[-1]
-                variant = tags.get("graphids.variant") or tags.get("graphids.row_name") or ""
+                variant = (
+                    tags.get("graphids.variant") or tags.get("graphids.row_name") or ""
+                )
                 key = f"{row_group}:{variant}"
                 if variants is not None and variant not in variants:
                     continue
                 if latest and key in seen:
                     continue
                 seen.add(key)
-                row_metrics = {metric: _metric_value(run.data.metrics, metric) for metric in metrics}
+                row_metrics = {
+                    metric: _metric_value(run.data.metrics, metric)
+                    for metric in metrics
+                }
                 rows.append(
                     ResultRow(
                         dataset=dataset,
@@ -151,7 +162,9 @@ def result_rows_as_json(rows: list[ResultRow]) -> list[dict[str, Any]]:
     return [row.flat() for row in rows]
 
 
-def sort_rows(rows: list[ResultRow], *, by: Literal["dataset", "variant"] = "dataset") -> list[ResultRow]:
+def sort_rows(
+    rows: list[ResultRow], *, by: Literal["dataset", "variant"] = "dataset"
+) -> list[ResultRow]:
     if by == "variant":
         return sorted(rows, key=lambda r: (r.variant, r.dataset, r.start_time or 0))
     return sorted(rows, key=lambda r: (r.dataset, r.variant, r.start_time or 0))

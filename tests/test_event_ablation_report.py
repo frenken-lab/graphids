@@ -90,3 +90,25 @@ def test_missing_epoch_cannot_be_reported_as_complete(tmp_path):
     path = tmp_path / "suite.json"
     path.write_text(json.dumps(dict(root=str(tmp_path), training_jobs=[job])))
     assert suite_report(path)["status"] == "incomplete"
+
+
+def test_phase_reports_reuse_baseline_and_strict_cli_blocks_incomplete_controls(tmp_path):
+    import subprocess
+    import sys
+
+    baseline = dict(write_arm(tmp_path, "baseline"), phases=["controls", "context"])
+    control = dict(write_arm(tmp_path, "control", finished=False), phases=["controls"])
+    context = dict(write_arm(tmp_path, "context"), phases=["context"])
+    path = tmp_path / "suite.json"
+    path.write_text(json.dumps(dict(root=str(tmp_path), training_jobs=[
+        baseline, control, context
+    ])))
+    assert suite_report(path, phase="controls")["status"] == "incomplete"
+    assert suite_report(path, phase="context")["status"] == "complete"
+    output = tmp_path / "report.json"
+    result = subprocess.run([
+        sys.executable, "scripts/event_ablation_report.py", str(path),
+        "--phase", "controls", "--require-complete", "--output", str(output)
+    ], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert json.loads(output.read_text())["status"] == "incomplete"

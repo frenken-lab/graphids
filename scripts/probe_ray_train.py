@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from graphids.exp.ray_backend import probe_ray_train_imports
+from graphids.exp.run import probe_ray_train_imports
 
 
 def main() -> None:

@@ -4,7 +4,7 @@
 
 GraphIDS has three observability surfaces:
 
-- Per-run `.graphids/` journals and offline MLflow ingest payloads.
+- Per-run saved configuration, authoritative manifest and lifecycle events.
 - MLflow SQLite for post-run params, tags, metrics, and artifacts.
 - SLURM stdout/stderr logs for process text.
 
@@ -12,10 +12,10 @@ GraphIDS has three observability surfaces:
 
 ```text
 {run_root}/{dataset}/{experiment_name}/{run_name}/
+  resolved-run.yml
   .graphids/
     manifest.json
     events.jsonl
-    mlflow_ingest.json
   checkpoints/
   artifacts/
 ```
@@ -32,8 +32,9 @@ GRAPHIDS_MLFLOW_MODE=offline
 ```
 
 Training and evaluation jobs do not write to the shared MLflow SQLite database
-while running. They write `.graphids/mlflow_ingest.json`; a separate serialized
-step replays that payload into MLflow:
+while running. Schema-2 manifests hold final status, metrics and failures; a
+separate serialized step derives an MLflow export from that manifest and
+`resolved-run.yml`. Historical `mlflow_ingest.json` files remain supported:
 
 ```bash
 gx exp ingest <run_dir>
@@ -47,6 +48,9 @@ Lightning `MLFlowLogger`. In either path, the default MLflow tracking URI is:
 sqlite:///$GRAPHIDS_LAKE_ROOT/mlflow.db
 ```
 
+`GRAPHIDS_MLFLOW_MODE=disabled` (also `off` or `none`) keeps results local.
+The saved manifest records this choice; batch ingestion skips those runs.
+
 Experiment names are created as:
 
 ```text
@@ -57,7 +61,7 @@ Run names are `RunConfig.name`, normally the experiment name.
 
 ### Tags
 
-`RunConfig.mlflow_tags()` writes:
+`graphids.exp.tracking.mlflow_tags(run)` writes:
 
 ```text
 graphids.stage
@@ -71,7 +75,7 @@ graphids.representation
 
 ### Params
 
-`RunConfig.mlflow_hparams()` writes:
+`graphids.exp.tracking.mlflow_hparams(run)` writes:
 
 ```text
 graphids.stage
@@ -92,8 +96,8 @@ Nested payload fields are flattened by `gx exp ingest`.
 
 The event model logs separately normalized classification and normal-only payload
 losses, plus exact frame metrics such as `val/classification_frame_ap`.
-`graphids.exp.ray_backend` captures scalar `trainer.callback_metrics` after
-`fit` and `test` into the offline ingest payload; vector metrics are omitted.
+`graphids.exp.run` captures scalar `trainer.callback_metrics` after
+`fit` and `test` into the authoritative manifest; vector metrics are omitted.
 
 `graphids._mlflow.MLflowSystemMetricsCallback` records phase throughput under
 `.graphids/phase_metrics.json`. When a live MLflow run is available it also starts
@@ -107,7 +111,7 @@ label availability; exceptions discard unfinished counters.
 Offline diagnostic runs can include
 `graphids._mlflow.MLflowSystemMetricsSummaryCallback`. It maps native MLflow
 histories to `resource/*` CPU, system-memory, and GPU summaries, which are copied
-from final callback metrics into `.graphids/mlflow_ingest.json`.
+from final callback metrics into the manifest for subsequent MLflow export.
 `resource/rss_gib_*` is a retained metric name for system memory usage, not
 process RSS. Missing optional GPU histories leave GPU summary keys absent.
 Summary metric families share history collection and reductions. GPU utilization

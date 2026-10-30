@@ -20,10 +20,12 @@ scores, recording coverage checks and the evaluation index; it uses only NumPy
 and the standard library. Shared exact AP and AUC live in `graphids/metrics.py`, using one
 tied-score ranking pass.
 
-`graphids/exp/runtime.py` constructs data, models and callbacks.
-`graphids/exp/ray_backend.py` launches Ray workers and runs Lightning, journals
-run status and queues offline metrics for serialized ingestion.
-`graphids/exp/slurm.py` and `graphids/cli/exp.py` render and submit allocations.
+`graphids/exp/run.py` constructs components and executes a validated run through
+Lightning and Ray. `graphids/exp/records.py` owns saved configuration, authoritative
+status/results and lifecycle events. `graphids/exp/tracking.py` derives MLflow
+exports from those records and reads historical offline payloads.
+`graphids/exp/slurm.py` renders single-node jobs, freezes source and submits
+dependency-aware jobs. `graphids/cli/exp.py` exposes these operations.
 `graphids/callbacks.py` provides checkpoint hashes and resource callbacks;
 `graphids/_mlflow.py` owns tracking and system metrics.
 

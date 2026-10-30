@@ -18,7 +18,7 @@ from graphids.data.recordings import (
     read_rows,
 )
 from graphids.exp.config import ExperimentConfig
-from graphids.exp.runtime import build_component
+from graphids.exp.run import build_component
 from graphids.metrics import raw_average_precision
 from graphids.models.event_graph_mamba import EventGraphMamba
 from tests.event_fixtures import event_record, model, source_dm

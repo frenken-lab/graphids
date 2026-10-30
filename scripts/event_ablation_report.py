@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 
 import yaml
@@ -78,16 +79,18 @@ def summarize_run(config, run_dir):
     )
 
 
-def suite_report(path):
+def suite_report(path, *, phase=None):
     suite = json.loads(path.read_text())
     root = Path(suite["root"])
     arms, errors = [], []
     cohort = None
     for job in suite["training_jobs"]:
+        if phase is not None and phase not in job.get("phases", []):
+            continue
         cfg = yaml.safe_load(Path(job["config"]).read_text())
         name = cfg["experiment_name"]
         run_dir = root / "runs" / cfg["dataset"] / name / name
-        arm = dict(name=name, job_id=job["job_id"], config=job["config"])
+        arm = dict(name=name, job_id=job.get("job_id"), config=job["config"])
         try:
             arm.update(summarize_run(cfg, run_dir))
             if arm["coverage"] is not None:
@@ -106,7 +109,7 @@ def suite_report(path):
         schema_version=1,
         status="complete" if complete else "incomplete",
         selection="maximum aggregate validation classification AP; earliest epoch on ties",
-        interpretation="Exploratory source validation, seed 42. No independent test or alert-budget assessment.",
+        interpretation="Exploratory source validation. No independent test or alert-budget assessment.",
         threshold="0.5 diagnostic only; no threshold fitted by this report",
         payload="Classification-only arm has untrained payload scores; exclude them from detector comparisons.",
         errors=errors,
@@ -118,10 +121,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suite", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--phase", choices=("controls", "context"))
+    parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
-    report = suite_report(args.suite)
+    report = suite_report(args.suite, phase=args.phase)
     output = args.output or args.suite.parent / "comparison-results.json"
-    temporary = output.with_suffix(".tmp")
+    temporary = output.with_suffix(f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     temporary.replace(output)
     print(f"{report['status']}: {output}")
@@ -133,6 +138,8 @@ def main():
             else "no complete validation epoch"
         )
         print(f"{arm['job_id']} {arm['status']}: {detail}")
+    if args.require_complete and report["status"] != "complete":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

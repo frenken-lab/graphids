@@ -23,6 +23,34 @@ def persist(path, value):
     temporary.replace(path)
 
 
+def source_provenance(root):
+    """Identify either a working checkout or a frozen, Git-free runtime copy."""
+    import hashlib
+
+    receipt = root / "source-provenance.json"
+    if receipt.exists():
+        saved = json.loads(receipt.read_text())
+        git_head = saved["git_head"]
+        diff = saved["working_tree_diff"].encode()
+        names = saved["files"]
+    else:
+        git_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip()
+        diff = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=root)
+        names = subprocess.check_output(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=root, text=True,
+        ).splitlines()
+    hashes = {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in names
+        if name.startswith(("graphids/", "tests/", "scripts/", "configs/"))
+        and (root / name).is_file()
+    }
+    return git_head, diff, hashes
+
+
 def benchmark(
     config,
     output,
@@ -45,7 +73,7 @@ def benchmark(
 
     from graphids.data.events import EventStreamWindows, EventTrainingLoader
     from graphids.exp.config import ExperimentConfig
-    from graphids.exp.runtime import build_component
+    from graphids.exp.run import build_component
     from graphids.models.config import EventGraphMambaConfig
     from graphids.models.event_graph_mamba import (
         _GRAPH_WORKSPACE_BYTES,
@@ -168,18 +196,9 @@ def benchmark(
     ]
     import hashlib
 
-    diff = subprocess.check_output(["git", "diff", "--binary"])
+    git_head, diff, source_hashes = source_provenance(Path(__file__).resolve().parents[1])
     (output / "working-tree.diff").write_bytes(diff)
     (output / "configuration.yml").write_bytes(Path(config).read_bytes())
-    source_files = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard"], text=True
-    ).splitlines()
-    source_hashes = {
-        name: hashlib.sha256(Path(name).read_bytes()).hexdigest()
-        for name in source_files
-        if name.startswith(("graphids/", "tests/", "scripts/", "configs/"))
-        and Path(name).is_file()
-    }
     persist(output / "source-sha256.json", source_hashes)
     persist(output / "resolved-configuration.json", cfg.model_dump(mode="json"))
     results = dict(
@@ -191,9 +210,7 @@ def benchmark(
             (output / "source-sha256.json").read_bytes()
         ).hexdigest(),
         cuda_prefetch=cuda_prefetch,
-        git_head=subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip(),
+        git_head=git_head,
         working_tree_diff_sha256=hashlib.sha256(diff).hexdigest(),
         configuration_sha256=hashlib.sha256(Path(config).read_bytes()).hexdigest(),
         device=torch.cuda.get_device_name(),

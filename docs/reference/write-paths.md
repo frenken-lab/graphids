@@ -45,7 +45,6 @@ $GRAPHIDS_RUN_ROOT/{dataset}/{experiment_name}/{run_name}/
   .graphids/
     manifest.json
     events.jsonl
-    mlflow_ingest.json
   checkpoints/
     best_model.ckpt
     best_model.ckpt.sha256
@@ -103,28 +102,28 @@ The removed generic representation digest was not used by this active cache.
 
 ## Run Journals
 
-Run manifests and MLflow ingest payloads share `graphids._fs.atomic_write_json`:
+Run manifests use `graphids._fs.atomic_write_json`:
 indented, sorted UTF-8 JSON with a final newline, written through a unique
 same-directory temporary file and atomic replacement. Failed serialization or
 replacement preserves the last published file and removes the temporary file.
 
-Ray Train workers run through `graphids.exp.ray_backend`, which writes:
+Ray Train workers run through `graphids.exp.run`, which writes:
 
 | File | Purpose |
 |---|---|
 | `resolved-run.yml` | expanded `RunConfig` including payload, resources, and output paths |
-| `.graphids/manifest.json` | resolved run identity, config, outputs, status, failure |
-| `.graphids/events.jsonl` | worker, Ray result, finish, and failure events |
-| `.graphids/mlflow_ingest.json` | offline MLflow payload replayed by `gx exp ingest` |
+| `.graphids/manifest.json` | authoritative status, final metrics, failure and result metadata |
+| `.graphids/events.jsonl` | startup, finish and failure history |
 
 `gx exp status <run_dir>` reads these files.
 
 ## MLflow
 
 Training runs default to offline MLflow mode. They do not write to the shared
-MLflow SQLite database during `fit`/`test`; instead they write
-`.graphids/mlflow_ingest.json` in the run directory. A separate single-writer
-ingest step serializes completed runs into MLflow:
+MLflow SQLite database during `fit`/`test`; instead they save
+status and metrics in the schema-2 manifest. A separate single-writer step derives
+an MLflow export from that manifest and `resolved-run.yml`. Historical separate
+`mlflow_ingest.json` payloads remain readable:
 
 ```bash
 gx exp ingest <run_dir>
@@ -142,7 +141,7 @@ sqlite:///{lake_root}/mlflow.db
 `gx exp ingest` creates the MLflow run, logs tags/params/final metrics, copies
 run artifacts, and marks the run `FINISHED` or `FAILED`. For Lightning `fit`
 and `test`, final callback metrics are captured after the trainer returns and
-stored in the ingest payload.
+stored in the manifest.
 
 MLflow artifact roots are explicit lake paths:
 
@@ -154,7 +153,7 @@ MLflow system metrics are sampled by `MLflowSystemMetricsCallback` only when
 `GRAPHIDS_MLFLOW_MODE=online`. Offline diagnostic profiles can still record
 aggregate `resource/*` CPU/RSS/GPU metrics through `graphids._mlflow.MLflowSystemMetricsSummaryCallback`
 because those values are copied from final `trainer.callback_metrics` into
-`.graphids/mlflow_ingest.json`.
+the manifest.
 
 ## SLURM
 
@@ -164,7 +163,7 @@ because those values are copied from final `trainer.callback_metrics` into
 {slurm_log_dir}/scripts/ray-{experiment_name}.sbatch
 ```
 
-The script starts a Ray head and workers inside the SLURM allocation, then runs:
+The script starts one Ray head inside the single-node Slurm allocation, then runs:
 
 ```bash
 cd /users/PAS2022/rf15/graphids
@@ -191,12 +190,12 @@ gx exp submit <yaml>
 
 compute node:
   -> scripts/slurm/_preamble.sh
-  -> start Ray head/workers in the allocation
+  -> start one Ray head in the allocation
   -> python -m graphids exp launch <yaml> --address ${RAY_ADDRESS}
   -> ExperimentConfig.from_yaml
-  -> ray_backend.launch_run
-  -> ray_backend worker loop
+  -> run.launch_run
+  -> run.execute_run
   -> fit | test
-  -> manifest/events + MLflow
+  -> authoritative manifest + lifecycle events
   -> scripts/slurm/_epilog.sh
 ```

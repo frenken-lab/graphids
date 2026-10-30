@@ -1,6 +1,6 @@
 # CAN event model: improvement checklist and implementation plan
 
-Updated: 2026-10-27. Scope: improve detection quality in the active
+Updated: 2026-10-30. Scope: improve detection quality in the active
 `can_event_dm` / `event_graph_mamba` pipeline. This document records the research
 recommendations and proposed implementations; unchecked items are not implemented.
 It does not authorize a claim of improved accuracy before the experiments finish.
@@ -213,6 +213,81 @@ The shared loss helper also applies the weight to validation BCE; compare AP and
 operating-point metrics across arms rather than treating weighted/unweighted BCE
 as identical objectives.
 
+### Reproducible control retry and matched context suite
+
+`python -m scripts.event_quality_suite prepare OUTPUT` prepares eleven fresh
+seed-42 fits: the five controls above and six individual Section 4 feature arms.
+The ordinary-BCE, one-stream joint-objective arm is shared as the context
+baseline. Every fit uses 25 epochs, 16,384-event chunks, a 65,536-event optimizer
+window and 8,388,608 graph tokens. Other seeds are explicit via `--seed`.
+This is an exploratory comparison against the declared baseline; it does not
+automatically combine whichever controls or context features score best.
+
+Preparation verifies reviewed source files, recounts training-only labels,
+checks output-space/inode headroom and freezes runtime source (including dirty
+and untracked code), the reviewed manifest, expanded configs, file hashes and
+installed dependency versions. Reserved target files are never opened. Python
+dependencies use the existing environment and are checked for version changes
+before every job. Suite outputs and experiment names are unique; existing suites
+and partially submitted suites are not overwritten or silently resubmitted.
+
+`python -m scripts.event_quality_suite submit OUTPUT` submits two CUDA gates,
+eleven fits and two reports. All controls require the control gate to pass.
+Context fits additionally require a combined-feature gate and a complete control
+report. The control gate checks weighted one/four-stream parity; the context gate
+uses a tiny one/two-stream combined-feature correctness cohort. Both run the full
+test suite and public Ray/Lightning smoke. These bounded gates are not quality or
+production-throughput measurements. Invalid dependencies cancel pending jobs.
+Reports run after fits terminate, retain incomplete results and fail unless all
+expected epochs and evaluation populations match.
+
+`python -m scripts.event_quality_suite status OUTPUT` refreshes scheduler receipts
+and separate `controls-results.json` / `context-results.json` reports. A submitted
+suite remains pending evidence until the fits and reports finish successfully.
+No calibration, independent-test or alert-budget claim follows from these reports.
+
+**October 30 submission:** the frozen suite is under
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-quality-context-20261030T185508Z/`.
+Source verification recounted 8,526,701 training rows (178,904 positives and
+8,347,797 negatives) and 12,758,965 validation rows. All eleven fits together
+require approximately 156.85 GiB for packed prediction values; preparation found
+more than 500 GiB free. The CPU suite passed 104 tests, and 14 focused suite checks
+passed. Ruff, documentation symbol checks and shell syntax checks passed.
+
+| Job | Ascend ID |
+| --- | --- |
+| Weighted one/four-stream CUDA gate | 8217866 |
+| Combined-context CUDA gate | 8217867 |
+| One stream, ordinary BCE, joint objective / shared context baseline | 8217868 |
+| One stream, weighted BCE | 8217869 |
+| Four streams, ordinary BCE | 8217870 |
+| Four streams, weighted BCE | 8217871 |
+| One stream, ordinary BCE, classification only | 8217872 |
+| Complete-control report | 8217873 |
+| No elapsed time | 8217874 |
+| Normalized bus gap | 8217875 |
+| Per-ID gap | 8217876 |
+| Payload delta | 8217877 |
+| Payload XOR | 8217878 |
+| Graph age | 8217879 |
+| Complete-context report | 8217880 |
+
+At submission all jobs were pending. `suite.json`, scheduler accounting and the
+phase reports record subsequent execution; submission is not a completed quality
+comparison. Context fits require the complete-control report and their own gate
+to succeed. The historical interrupted suite is retained unchanged.
+
+**Checkpoint audit during experiment-package refactoring:** a synthetic Ray fit
+showed that the installed Lightning callback could leave `last.ckpt` at epoch 0
+after a tied validation score in epoch 1. Checkpoint testing reproduced epoch 0
+exactly, rather than the final epoch. `Sha256ModelCheckpoint` now independently
+refreshes the last checkpoint on eligible epoch saves, retaining best-score
+selection and SHA256 sidecars. Regression checks cover both train-epoch and
+validation-end saving. The already-submitted quality suite uses its original
+frozen callback; verify checkpoint epoch/global-step before treating its
+`last.ckpt` as a final-state checkpoint or using it for resume. Its best-AP
+selection and frame prediction artifacts are unaffected by this callback fix.
+
 ### Family balance and ordering
 
 Implement optional recording/family weights in `EventTrainingWindow` metadata and
@@ -268,8 +343,10 @@ capacity guards are retained.
 
 `scripts/event_context_ablation.py OUTPUT --seed 42` generates seven configs:
 baseline, no elapsed time, normalized bus gap, per-ID gap, payload delta,
-payload XOR, and graph age. It preserves the base run's data, training budget,
-and objective settings, and does not submit jobs. Repeat with seeds 43 and 44 in
+payload XOR, and graph age. Its default base now matches the ordinary-BCE,
+one-stream 25-epoch control above. Pass `--base CONTROL.yml` to preserve a reviewed
+control's data, training budget and objective settings. It does not submit jobs.
+Repeat with seeds 43 and 44 in
 separate directories. Correctness/smoke validation is separate from the pending
 full held-out quality comparisons; no detection gain is claimed.
 

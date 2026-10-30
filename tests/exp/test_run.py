@@ -8,15 +8,14 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     import ray.train
     import ray.train.torch
 
-    from graphids.exp import ray_backend
+    from graphids.exp import run as runner
     from graphids.exp.config import (
-        FitRunPayload,
         OutputConfig,
         ResourceConfig,
         RunConfig,
+        RunPayload,
     )
-    from graphids.exp.journal import RunManifest, write_manifest
-    from graphids.exp.ray_backend import RunSummary
+    from graphids.exp.records import RunManifest, RunSummary, write_manifest
 
     captured: dict[str, object] = {}
 
@@ -48,7 +47,7 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
     monkeypatch.setattr(ray.train, "RunConfig", FakeRunConfig)
     monkeypatch.setattr(ray.train.torch, "TorchTrainer", FakeTorchTrainer)
     monkeypatch.setattr(
-        ray_backend,
+        runner,
         "summarize_run",
         lambda run_dir: RunSummary(
             run_dir=str(run_dir), status="finished", stage="fit", name="ray-demo"
@@ -62,8 +61,8 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
             accelerator="gpu", cpus_per_worker=4, gpus_per_worker=1.0
         ),
         outputs=OutputConfig(run_dir=tmp_path / "ray-demo"),
-        payload=FitRunPayload(
-            trainer={"devices": 2},
+        payload=RunPayload(
+            trainer={"devices": 1},
             callbacks={
                 "best": {
                     "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
@@ -85,12 +84,12 @@ def test_launch_run_builds_real_ray_trainer_config(monkeypatch, tmp_path):
         ),
     )
 
-    summary = ray_backend.launch_run(run, address="local")
+    summary = runner.launch_run(run, address="local")
 
     assert summary.status == "finished"
     assert captured["ray_init"] == {"address": "local", "ignore_reinit_error": True}
     assert captured["scaling_config"] == {
-        "num_workers": 2,
+        "num_workers": 1,
         "use_gpu": True,
         "resources_per_worker": {"CPU": 4, "GPU": 1.0},
     }
@@ -120,7 +119,7 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
     from lightning.pytorch.callbacks import ModelCheckpoint
 
     from graphids._mlflow import MLflowSystemMetricsCallback
-    from graphids.exp import ray_backend, runtime
+    from graphids.exp import run as runner
 
     captured = {}
 
@@ -158,7 +157,7 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
     )
     components = {"dummy_data": data, "dummy_model": model, "checkpoint": checkpoint}
     monkeypatch.setattr(
-        runtime, "build_component", lambda spec: components[spec["type"]]
+        runner, "build_component", lambda spec: components[spec["type"]]
     )
     lightning = types.ModuleType("lightning")
     pytorch = types.ModuleType("lightning.pytorch")
@@ -197,17 +196,24 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
             lambda: types.SimpleNamespace(get_world_rank=lambda: 0),
         )
 
-    result = ray_backend._build_lightning_run(
-        stage,
-        {
-            "data": {"type": "dummy_data"},
-            "model": {"type": "dummy_model"},
-            "trainer": {"max_epochs": 1},
-            "callbacks": {"checkpoint": {"type": "checkpoint"}} if checkpoint else {},
-            "seed_everything": 7,
-            "ckpt_path": "resume.ckpt",
-            "compile": {"backend": "eager", "fullgraph": False},
-        },
+    from graphids.exp.config import OutputConfig, RunConfig, RunPayload
+
+    payload = {
+        "data": {"type": "dummy_data"},
+        "model": {"type": "dummy_model"},
+        "trainer": {"max_epochs": 1},
+        "callbacks": {"checkpoint": {"type": "checkpoint"}} if checkpoint else {},
+        "seed_everything": 7,
+        "ckpt_path": "resume.ckpt",
+        "compile": {"backend": "eager", "fullgraph": False},
+    }
+    result = runner.run_lightning(
+        RunConfig(
+            name="wiring",
+            stage=stage,
+            payload=RunPayload.model_validate(payload),
+            outputs=OutputConfig(run_dir=tmp_path),
+        ),
         logger=logger,
         ray=ray_enabled,
     )
@@ -241,3 +247,109 @@ def test_build_lightning_run_wires_components_compile_logger_and_ray(
             isinstance(cb, FakeRayTrainReportCallback) for cb in kwargs["callbacks"]
         )
         assert captured["prepared_trainer"] is not None
+
+
+def test_execute_run_saves_one_authoritative_result_and_reports_worker_metrics(
+    monkeypatch, tmp_path
+):
+    import ray.train
+
+    from graphids.exp import run as runner
+    from graphids.exp.config import OutputConfig, RunConfig
+    from graphids.exp.records import load_events, load_manifest
+    from graphids.exp.tracking import load_ingest_payload
+
+    run = RunConfig(
+        name="one-result", stage="fit", outputs=OutputConfig(run_dir=tmp_path)
+    )
+    result = dict(stage="fit", trainer="fixture", metrics={"val/ap": 0.75})
+    monkeypatch.setenv("GRAPHIDS_MLFLOW_MODE", "offline")
+    monkeypatch.setattr(runner, "run_lightning", lambda actual, **kwargs: result)
+    monkeypatch.setattr(
+        ray.train,
+        "get_context",
+        lambda: type("Context", (), {"get_world_rank": lambda self: 0})(),
+    )
+    reported = []
+    monkeypatch.setattr(ray.train, "report", reported.append)
+    runner._worker_loop({"run": run.model_dump(mode="json")})
+    manifest = load_manifest(tmp_path)
+    assert manifest.schema_version == 2
+    assert manifest.status == "finished"
+    assert manifest.metrics == {"val/ap": 0.75}
+    assert manifest.result == {"stage": "fit", "trainer": "fixture"}
+    assert [event.status for event in load_events(tmp_path)] == ["running", "finished"]
+    assert not (tmp_path / ".graphids/mlflow_ingest.json").exists()
+    assert load_ingest_payload(tmp_path)["metrics"] == manifest.metrics
+    assert reported == [{"val/ap": 0.75, "graphids_finished": 1.0}]
+
+
+@pytest.mark.parametrize("failure_at", ["logger", "lightning"])
+def test_startup_and_training_errors_leave_failed_records(
+    monkeypatch, tmp_path, failure_at
+):
+    from graphids.exp import run as runner
+    from graphids.exp.config import OutputConfig, RunConfig
+    from graphids.exp.records import load_manifest
+    from graphids.exp.tracking import load_ingest_payload
+
+    error = RuntimeError(f"failure in {failure_at}")
+
+    def broken(*args, **kwargs):
+        raise error
+
+    run = RunConfig(name="failed", stage="fit", outputs=OutputConfig(run_dir=tmp_path))
+    monkeypatch.setenv(
+        "GRAPHIDS_MLFLOW_MODE", "online" if failure_at == "logger" else "offline"
+    )
+    monkeypatch.setattr(
+        runner, "make_logger" if failure_at == "logger" else "run_lightning", broken
+    )
+    with pytest.raises(RuntimeError) as caught:
+        runner.execute_run(run)
+    assert caught.value is error
+    manifest = load_manifest(tmp_path)
+    assert manifest.status == "failed"
+    assert manifest.failure == f"RuntimeError: {error}"
+    assert load_ingest_payload(tmp_path)["status"] == "FAILED"
+
+
+def test_ray_initialization_failure_is_recorded(monkeypatch, tmp_path):
+    import ray
+
+    from graphids.exp.config import OutputConfig, RunConfig
+    from graphids.exp.records import load_manifest
+    from graphids.exp.run import launch_run
+
+    monkeypatch.setattr(ray, "is_initialized", lambda: False)
+
+    def broken(**kwargs):
+        raise RuntimeError("cluster unavailable")
+
+    monkeypatch.setattr(ray, "init", broken)
+    run = RunConfig(name="startup", stage="fit", outputs=OutputConfig(run_dir=tmp_path))
+    with pytest.raises(RuntimeError, match="cluster unavailable"):
+        launch_run(run)
+    assert load_manifest(tmp_path).status == "failed"
+
+
+@pytest.mark.parametrize("mode", ["disabled", "off", "none"])
+def test_disabled_tracking_keeps_results_local(monkeypatch, tmp_path, mode):
+    from graphids.exp import run as runner
+    from graphids.exp.config import OutputConfig, RunConfig
+    from graphids.exp.records import load_manifest
+    from graphids.exp.tracking import discover_runs, ingest_many
+
+    monkeypatch.setenv("GRAPHIDS_MLFLOW_MODE", mode)
+    monkeypatch.setattr(
+        runner, "run_lightning", lambda *args, **kwargs: {"metrics": {"ap": 0.5}}
+    )
+    run = RunConfig(
+        name="local", stage="fit", outputs=OutputConfig(run_dir=tmp_path / "run")
+    )
+    runner.execute_run(run)
+    assert load_manifest(run.outputs.run_dir).tracking_mode == "disabled"
+    results = ingest_many(discover_runs(tmp_path))
+    assert len(results) == 1
+    assert results[0].status == "skipped"
+    assert results[0].run_id is None

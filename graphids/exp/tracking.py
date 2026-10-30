@@ -3,16 +3,72 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from graphids._fs import atomic_write_json
 from graphids.exp.config import RunConfig
-from graphids.exp.journal import journal_dir
+from graphids.exp.records import journal_dir, load_config, load_manifest
 
 INGEST_PAYLOAD_NAME = "mlflow_ingest.json"
+
+
+def tracking_mode() -> str:
+    mode = os.environ.get("GRAPHIDS_MLFLOW_MODE", "offline").strip().lower()
+    if mode in {"online", "live"}:
+        return "online"
+    return "disabled" if mode in {"off", "none", "disabled"} else "offline"
+
+
+def mlflow_tags(run: RunConfig) -> dict[str, str]:
+    tags = {
+        "graphids.phase": run.stage,
+        "graphids.group": run.stage,
+        "graphids.variant": run.name,
+        "graphids.stage": run.stage,
+        "graphids.run_dir": str(run.outputs.run_dir),
+        "graphids.git_sha": run.git_sha,
+        "graphids.seed": str(run.seed),
+        "graphids.representation": run.representation_cfg.kind,
+    }
+    if run.dataset is not None:
+        tags["graphids.dataset"] = run.dataset
+    if run.plan_id is not None:
+        tags["graphids.plan_id"] = run.plan_id
+    return tags
+
+
+def mlflow_hparams(run: RunConfig) -> dict[str, Any]:
+    return {
+        "graphids.stage": run.stage,
+        "graphids.dataset": run.dataset or "",
+        "graphids.seed": run.seed,
+        "graphids.plan_id": run.plan_id or "",
+        "graphids.git_sha": run.git_sha,
+        "graphids.run_dir": str(run.outputs.run_dir),
+        "graphids.representation": run.representation_cfg.kind,
+        "graphids.representation_cfg": asdict(run.representation_cfg),
+        "graphids.payload": run.payload.model_dump(mode="json"),
+        **{
+            f"graphids.resource.{key}": value
+            for key, value in run.resources.model_dump(mode="json").items()
+        },
+    }
+
+
+def make_logger(run: RunConfig):
+    from graphids._mlflow import make_logger as build_logger
+
+    logger = build_logger(
+        experiment_name=f"graphids/{run.dataset or 'unknown'}/{run.stage}",
+        run_name=run.name,
+        tags=mlflow_tags(run),
+        artifact_location=mlflow_artifact_location(run),
+    )
+    logger.log_hyperparams(mlflow_hparams(run))
+    return logger
 
 
 @dataclass(frozen=True)
@@ -47,7 +103,7 @@ def build_ingest_payload(
     failure: str | None = None,
 ) -> dict[str, Any]:
     """Build the durable payload later replayed into MLflow."""
-    tags = run.mlflow_tags()
+    tags = mlflow_tags(run)
     tags.setdefault("graphids.phase", run.stage)
     tags.setdefault("graphids.group", run.stage)
     tags.setdefault("graphids.variant", run.name)
@@ -63,7 +119,7 @@ def build_ingest_payload(
         "status": status,
         "failure": failure,
         "tags": tags,
-        "params": run.mlflow_hparams(),
+        "params": mlflow_hparams(run),
         "metrics": dict(metrics or {}),
         "result": dict(result or {}),
         "artifacts": {
@@ -74,35 +130,38 @@ def build_ingest_payload(
     }
 
 
-def write_ingest_payload(
-    run: RunConfig,
-    *,
-    status: str,
-    metrics: Mapping[str, float] | None = None,
-    result: Mapping[str, Any] | None = None,
-    failure: str | None = None,
-) -> Path:
-    payload = build_ingest_payload(
-        run,
-        status=status,
-        metrics=metrics,
-        result=result,
-        failure=failure,
-    )
-    path = ingest_payload_path(run.outputs.run_dir)
-    atomic_write_json(path, payload)
-    return path
-
-
 def load_ingest_payload(run_dir: str | Path) -> dict[str, Any]:
+    """Derive current exports from saved records; read legacy payloads as fallback."""
+    manifest = load_manifest(run_dir)
+    if manifest is not None and manifest.schema_version == 2:
+        payload = build_ingest_payload(
+            load_config(run_dir),
+            status={"finished": "FINISHED", "failed": "FAILED", "killed": "KILLED"}.get(
+                manifest.status, "RUNNING"
+            ),
+            metrics=manifest.metrics,
+            result={**manifest.result, "metrics": manifest.metrics},
+            failure=manifest.failure,
+        )
+        payload["tags"]["graphids.tracking_mode"] = manifest.tracking_mode
+        return payload
     path = ingest_payload_path(run_dir)
     if not path.is_file():
         raise FileNotFoundError(f"no MLflow ingest payload found: {path}")
     return json.loads(path.read_text())
 
 
-def discover_ingest_payloads(root: str | Path) -> list[Path]:
-    return sorted(Path(root).glob(f"**/.graphids/{INGEST_PAYLOAD_NAME}"))
+def discover_runs(root: str | Path) -> list[Path]:
+    """Find current run records and historical offline payloads without duplicates."""
+    root = Path(root)
+    runs = {
+        path.parent.parent for path in root.glob(f"**/.graphids/{INGEST_PAYLOAD_NAME}")
+    }
+    for path in root.glob("**/resolved-run.yml"):
+        # Defer parsing to ingest_many so one corrupt run cannot hide other runs.
+        if (path.parent / ".graphids").is_dir():
+            runs.add(path.parent)
+    return sorted(runs)
 
 
 def _flatten_param_value(value: Any) -> str:
@@ -157,11 +216,15 @@ def ingest_run(
     log_artifacts: bool = True,
     skip_existing: bool = True,
 ) -> IngestResult:
-    """Replay one completed run's offline payload into MLflow.
+    """Export one terminal run record or historical payload into MLflow.
 
     This function is intentionally single-process oriented. Use it from a
     post-run Slurm job, not from every training job.
     """
+    manifest = load_manifest(run_dir)
+    if manifest is not None and manifest.tracking_mode == "disabled":
+        return IngestResult(str(run_dir), None, "skipped", "MLflow tracking disabled")
+
     import mlflow
     from mlflow.tracking import MlflowClient
 
@@ -226,7 +289,7 @@ def ingest_many(
     results: list[IngestResult] = []
     for path in paths:
         run_dir = Path(path)
-        if run_dir.name == INGEST_PAYLOAD_NAME:
+        if run_dir.name in (INGEST_PAYLOAD_NAME, "manifest.json"):
             run_dir = run_dir.parent.parent
         try:
             results.append(

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 
-def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
+def test_experiment_job_starts_single_node_ray_allocation(monkeypatch, tmp_path):
     from graphids.exp.config import ExperimentConfig, ResourceConfig
-    from graphids.exp.slurm import build_slurm_script
+    from graphids.exp.slurm import build_experiment_job
 
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "slurm"))
     cfg = ExperimentConfig(
@@ -19,15 +19,12 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
             account="pas1266",
         ),
     )
-    path, script = build_slurm_script(
-        cfg,
-        "configs/experiments/graph_mamba_events_source.yml",
-        nodes=2,
-    )
+    job = build_experiment_job(cfg)
+    path, script = job.script_path, job.script
 
     assert path == tmp_path / "slurm" / "scripts" / "ray-temporal_smoke.sbatch"
-    assert "#SBATCH --nodes=2" in script
-    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --nodes=1" in script
+    assert "#SBATCH --ntasks=1" in script
     assert "#SBATCH --job-name=ray-temporal_smoke" in script
     assert "#SBATCH --clusters=pitzer" in script
     assert "#SBATCH --partition=gpu" in script
@@ -36,7 +33,10 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert "#SBATCH --time=00:30:00" in script
     assert "#SBATCH --account=pas1266" in script
     assert "export SLURM_CPUS_PER_TASK=4" in script
-    assert "RAY_BASE_PORT=${GRAPHIDS_RAY_BASE_PORT:-$((20000 + (SLURM_JOB_ID % 200) * 200))}" in script
+    assert (
+        "RAY_BASE_PORT=${GRAPHIDS_RAY_BASE_PORT:-$((20000 + (SLURM_JOB_ID % 200) * 200))}"
+        in script
+    )
     assert "RAY_PORT=${GRAPHIDS_RAY_PORT:-${RAY_BASE_PORT}}" in script
     assert 'RAY_OBJECT_MANAGER_PORT="$((RAY_BASE_PORT + 1))"' in script
     assert 'RAY_NODE_MANAGER_PORT="$((RAY_BASE_PORT + 2))"' in script
@@ -48,7 +48,7 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert 'RAY_MIN_WORKER_PORT="$((RAY_BASE_PORT + 20))"' in script
     assert 'RAY_MAX_WORKER_PORT="$((RAY_BASE_PORT + 119))"' in script
     assert 'RAY_TMP_DIR="${TMPDIR:-/tmp}/graphids-ray-${SLURM_JOB_ID}"' in script
-    assert "RAY_START_PIDS=()" in script
+    assert "RAY_START_PID=" in script
     assert "export RAY_ADDRESS" in script
     assert "ray stop --force" not in script
     assert "ray start --head" in script
@@ -63,11 +63,11 @@ def test_build_slurm_script_starts_ray_allocation(monkeypatch, tmp_path):
     assert '--min-worker-port="${RAY_MIN_WORKER_PORT}"' in script
     assert '--max-worker-port="${RAY_MAX_WORKER_PORT}"' in script
     assert '--temp-dir="${RAY_TMP_DIR}/head"' in script
-    assert 'RAY_START_PIDS+=("$!")' in script
-    assert 'ray start --address="${RAY_ADDRESS}"' in script
+    assert "RAY_START_PID=$!" in script
+    assert "ray start --address=" not in script
     assert "trap cleanup_ray EXIT" in script
     assert "python -m graphids exp launch" in script
-    assert "--address \"${RAY_ADDRESS}\"" in script
+    assert '--address "${RAY_ADDRESS}"' in script
 
 
 def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path):
@@ -85,22 +85,26 @@ def test_submit_experiment_writes_script_and_calls_sbatch(monkeypatch, tmp_path)
             command_tuple = tuple(command)
         if command_tuple and command_tuple[0] == "sbatch":
             calls.append(command_tuple)
-            return subprocess.CompletedProcess(command, 0, stdout="Submitted batch job 12345\n")
+            return "12345;ascend\n"
         return subprocess.CompletedProcess(command, 0, stdout="")
 
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "slurm"))
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "check_output", fake_run)
     cfg = ExperimentConfig(
         experiment_name="temporal-smoke",
         dataset="set_01",
-        resources=ResourceConfig(accelerator="gpu", gpus_per_worker=1.0, account="pas1266"),
+        resources=ResourceConfig(
+            accelerator="gpu", gpus_per_worker=1.0, account="pas1266"
+        ),
     )
 
-    result = submit_experiment(cfg, "configs/experiments/graph_mamba_events_source.yml", nodes=2)
+    result = submit_experiment(cfg)
 
     assert result.job_id == "12345"
     assert result.script_path.is_file()
-    assert calls == [("sbatch", str(result.script_path))]
+    assert calls == [
+        ("sbatch", "--parsable", "--kill-on-invalid-dep=yes", str(result.script_path))
+    ]
 
 
 def test_exp_submit_dry_run_cli(monkeypatch):
@@ -111,7 +115,12 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", "/tmp/graphids-slurm-test")
     result = CliRunner().invoke(
         app,
-        ["exp", "submit", "configs/experiments/graph_mamba_events_source.yml", "--dry-run"],
+        [
+            "exp",
+            "submit",
+            "configs/experiments/graph_mamba_events_source.yml",
+            "--dry-run",
+        ],
     )
 
     assert result.exit_code == 0
@@ -120,7 +129,9 @@ def test_exp_submit_dry_run_cli(monkeypatch):
     assert "python -m graphids exp launch" in result.stdout
 
 
-def test_submission_freezes_expanded_yaml_and_dry_run_does_not_write(monkeypatch, tmp_path):
+def test_submission_freezes_expanded_yaml_and_dry_run_does_not_write(
+    monkeypatch, tmp_path
+):
     import subprocess
 
     import yaml
@@ -129,19 +140,69 @@ def test_submission_freezes_expanded_yaml_and_dry_run_does_not_write(monkeypatch
     from graphids.exp.slurm import submit_experiment
 
     monkeypatch.setenv("GRAPHIDS_SLURM_LOG_DIR", str(tmp_path / "logs"))
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="Submitted batch job 123\n"))
+    monkeypatch.setattr(
+        subprocess, "check_output", lambda *args, **kwargs: "123;ascend\n"
+    )
     base = tmp_path / "base.yml"
     base.write_text("config:\n  trainer:\n    max_epochs: 3\n")
     leaf = tmp_path / "leaf.yml"
-    leaf.write_text("extends: base.yml\nexperiment_name: frozen\ndataset: set_01\ngit_sha: test\n")
+    leaf.write_text(
+        "extends: base.yml\nexperiment_name: frozen\ndataset: set_01\ngit_sha: test\n"
+    )
     cfg = ExperimentConfig.from_yaml(leaf)
-    submit_experiment(cfg, leaf, dry_run=True)
+    submit_experiment(cfg, dry_run=True)
     assert not (tmp_path / "logs").exists()
-    result = submit_experiment(cfg, leaf)
-    snapshot, = (tmp_path / "logs/scripts").glob("*.yml")
+    result = submit_experiment(cfg)
+    (snapshot,) = (tmp_path / "logs/scripts").glob("*.yml")
     assert str(snapshot) in result.script
     assert "extends" not in yaml.safe_load(snapshot.read_text())
     base.write_text("config:\n  trainer:\n    max_epochs: 99\n")
     assert ExperimentConfig.from_yaml(snapshot).config["trainer"]["max_epochs"] == 3
-    submit_experiment(ExperimentConfig.from_yaml(leaf), leaf)
+    submit_experiment(ExperimentConfig.from_yaml(leaf))
     assert len(list((tmp_path / "logs/scripts").glob("*.yml"))) == 2
+
+
+def test_public_job_api_quotes_preflight_and_carries_dependencies(
+    monkeypatch, tmp_path
+):
+    import subprocess
+
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.slurm import build_experiment_job, submit_script, write_job
+
+    cfg = ExperimentConfig(experiment_name="preflight", dataset="fixture")
+    root = tmp_path / "source space"
+    root.mkdir()
+    job = build_experiment_job(
+        cfg,
+        source_root=root,
+        log_dir=tmp_path / "logs",
+        preflight=[["python", "check.py", "literal; no shell"]],
+        modules=["cuda/12.8.1"],
+    )
+    assert "python check.py 'literal; no shell'" in job.script
+    assert job.script.index("python check.py") < job.script.index("ray start --head")
+    subprocess.run(["bash", "-n"], input=job.script, text=True, check=True)
+    write_job(job)
+    monkeypatch.setattr(
+        subprocess, "check_output", lambda *args, **kwargs: "123;ascend\n"
+    )
+    result = submit_script(job.script_path, dependency="afterok:100:101")
+    assert result.job_id == "123"
+    assert "--dependency=afterok:100:101" in result.command
+
+
+def test_unsupported_device_counts_are_rejected_before_writing(tmp_path):
+    import pytest
+
+    from graphids.exp.config import ExperimentConfig
+    from graphids.exp.slurm import submit_experiment
+
+    cfg = ExperimentConfig(
+        experiment_name="unsupported",
+        dataset="fixture",
+        config={"trainer": {"devices": 2}},
+    )
+    with pytest.raises(ValueError, match="one device"):
+        submit_experiment(cfg, log_dir=tmp_path / "logs")
+    assert not (tmp_path / "logs").exists()

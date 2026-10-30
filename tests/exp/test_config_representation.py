@@ -6,8 +6,10 @@ def test_defaults_to_event_representation():
     run = cfg.build_run(name="demo-run", stage="fit")
     assert cfg.representation_cfg.kind == "can_event"
     assert run.representation_cfg.kind == "can_event"
-    assert run.mlflow_tags()["graphids.phase"] == "fit"
-    assert run.mlflow_hparams()["graphids.representation_cfg"] == {
+    from graphids.exp.tracking import mlflow_hparams, mlflow_tags
+
+    assert mlflow_tags(run)["graphids.phase"] == "fit"
+    assert mlflow_hparams(run)["graphids.representation_cfg"] == {
         "kind": "can_event",
         "schema_version": 1,
     }

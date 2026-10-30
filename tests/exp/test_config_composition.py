@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from graphids.exp.config import ExperimentConfig, RunConfig, load_experiment_yaml
+from graphids.exp.records import write_config
 
 
 def write(path, value):
@@ -56,7 +57,7 @@ def test_relative_inheritance_preserves_placeholders_and_replaces_values(tmp_pat
         tmp_path / "output/checkpoints"
     )
     assert (
-        RunConfig.model_validate(yaml.safe_load(run.write_config().read_text())) == run
+        RunConfig.model_validate(yaml.safe_load(write_config(run).read_text())) == run
     )
     expanded_path = write(tmp_path / "standalone.yml", expanded)
     assert ExperimentConfig.from_yaml(expanded_path) == experiment

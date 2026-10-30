@@ -12,15 +12,15 @@ from pathlib import Path
 import yaml
 
 
-def experiments(base, positive_weight, *, classification_only=False):
+def experiments(base, positive_weight, *, classification_only=False, seed=42):
     """Keep chunk length, optimizer window, seed and epochs fixed across arms."""
     for streams in (1, 4):
         for weighted in (False, True):
             cfg = deepcopy(base)
             cfg["experiment_name"] = (
-                f"event_ablation_streams{streams}_weighted{int(weighted)}_seed42"
+                f"event_ablation_streams{streams}_weighted{int(weighted)}_seed{seed}"
             )
-            cfg["seed"] = 42
+            cfg["seed"] = seed
             cfg["config"]["model"].update(
                 positive_weight=positive_weight if weighted else 1.0,
                 max_graph_tokens=8388608,
@@ -34,7 +34,7 @@ def experiments(base, positive_weight, *, classification_only=False):
             cfg["config"]["trainer"].update(max_epochs=25, enable_checkpointing=True)
             yield cfg
     if classification_only:
-        control = next(experiments(base, positive_weight))
+        control = next(experiments(base, positive_weight, seed=seed))
         control["experiment_name"] += "_classification_only"
         control["config"]["model"]["payload_weight"] = 0.0
         yield control
@@ -44,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--positive-weight", type=float, required=True)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--classification-only",
         action="store_true",
@@ -59,7 +60,8 @@ def main():
     base = yaml.safe_load(preset.read_text())
     args.output.mkdir(parents=True, exist_ok=True)
     for cfg in experiments(
-        base, args.positive_weight, classification_only=args.classification_only
+        base, args.positive_weight, classification_only=args.classification_only,
+        seed=args.seed,
     ):
         path = args.output / f"{cfg['experiment_name']}.yml"
         with path.open("x") as output:

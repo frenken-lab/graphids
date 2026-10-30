@@ -342,7 +342,7 @@ class MLflowSystemMetricsSummaryCallback(pl.Callback):
     """Summarize MLflow-native system metrics under GraphIDS resource keys.
 
     Offline benchmark runs need final scalar metrics in ``trainer.callback_metrics``
-    so the durable ``.graphids/mlflow_ingest.json`` payload can replay them later.
+    so the durable run manifest can export them to MLflow later.
     This callback starts a local MLflow run with native system metrics enabled,
     then reads MLflow metric histories at fit/test end and maps them onto the
     existing ``resource/*`` names. ``resource/rss_gib_*`` is retained for

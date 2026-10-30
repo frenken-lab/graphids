@@ -77,12 +77,12 @@ def test_mlflow_system_metrics_callback_lifecycle(monkeypatch):
 
 def test_manifest_and_events_round_trip(tmp_path):
     from graphids.exp.config import (
-        FitRunPayload,
         OutputConfig,
         ResourceConfig,
         RunConfig,
+        RunPayload,
     )
-    from graphids.exp.journal import (
+    from graphids.exp.records import (
         EventRecord,
         RunManifest,
         append_event,
@@ -98,7 +98,7 @@ def test_manifest_and_events_round_trip(tmp_path):
         dataset="hcrl_sa",
         seed=42,
         git_sha="abc123",
-        payload=FitRunPayload(
+        payload=RunPayload(
             model={"class_path": "graphids.models.config.EventGraphMambaConfig"},
             data={"class_path": "graphids.data.config.CANEventDataConfig"},
         ),
@@ -134,7 +134,7 @@ def test_manifest_and_events_round_trip(tmp_path):
 
 
 def test_exp_status_prints_summary(tmp_path):
-    from graphids.exp.journal import (
+    from graphids.exp.records import (
         EventRecord,
         RunManifest,
         append_event,
@@ -170,7 +170,7 @@ def test_exp_launch_loads_yaml_and_invokes_ray_backend(monkeypatch, tmp_path):
     import graphids.cli.exp as exp_cli
     import graphids.paths as paths
     from graphids.cli.app import app
-    from graphids.exp.ray_backend import RunSummary
+    from graphids.exp.records import RunSummary
 
     captured: dict[str, object] = {}
     run_root = tmp_path / "runs"
@@ -222,3 +222,26 @@ config:
     assert run.payload.model == {"type": "dummy_model"}
     assert run.payload.trainer == {"max_epochs": 1}
     assert run.outputs.run_dir == run_root / "hcrl_sa" / "smoke" / "smoke"
+
+
+def test_custom_journal_names_are_used_by_status_and_exports(tmp_path):
+    from graphids.exp.config import OutputConfig, RunConfig
+    from graphids.exp.records import record_status, summarize_run, write_config
+    from graphids.exp.tracking import discover_runs, load_ingest_payload
+
+    run = RunConfig(
+        name="custom",
+        stage="test",
+        outputs=OutputConfig(
+            run_dir=tmp_path / "run",
+            manifest_name="custom.json",
+            events_name="history.jsonl",
+        ),
+    )
+    write_config(run)
+    record_status(run, "finished", result={"metrics": {"ap": 0.8}})
+    summary = summarize_run(run.outputs.run_dir)
+    assert summary.status == "finished"
+    assert summary.last_event == "run_finished"
+    assert discover_runs(tmp_path) == [run.outputs.run_dir]
+    assert load_ingest_payload(run.outputs.run_dir)["metrics"] == {"ap": 0.8}

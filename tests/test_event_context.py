@@ -292,7 +292,7 @@ def test_ablation_configs_are_isolated_and_require_explicit_schemas(tmp_path):
 
     import yaml
 
-    from graphids.exp.config import ExperimentConfig, FitRunPayload
+    from graphids.exp.config import ExperimentConfig, RunPayload
     from graphids.models.config import EventGraphMambaConfig
     from scripts.event_context_ablation import experiments
 
@@ -308,7 +308,7 @@ def test_ablation_configs_are_isolated_and_require_explicit_schemas(tmp_path):
     for arm in arms:
         ExperimentConfig.model_validate(arm)
         payload = arm["config"]
-        FitRunPayload.model_validate(payload)
+        RunPayload.model_validate(payload)
         assert arm["seed"] == 43
         assert payload["trainer"] == base["config"]["trainer"]
         assert payload["data"]["chunk_events"] == base["config"]["data"]["chunk_events"]
@@ -330,7 +330,7 @@ def test_ablation_configs_are_isolated_and_require_explicit_schemas(tmp_path):
     invalid = deepcopy(arms[3]["config"])
     invalid["data"]["representation_cfg"]["schema_version"] = 1
     with pytest.raises(ValueError, match="representation schema_version=2"):
-        FitRunPayload.model_validate(invalid)
+        RunPayload.model_validate(invalid)
 
 
 def test_invalid_fitted_statistics_and_incompatible_feature_checkpoints_are_rejected(

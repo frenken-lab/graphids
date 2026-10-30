@@ -2,7 +2,7 @@
 
 import pytest
 
-from graphids.exp.runtime import _scalar_metrics, build_component, resolve_spec
+from graphids.exp.run import _scalar_metrics, build_component, resolve_spec
 
 
 def test_component_builder_errors_propagate_without_retry(monkeypatch):
@@ -94,7 +94,7 @@ sys.meta_path.insert(0, NoTrainingImports())
 import graphids.data.config
 import graphids.models.config
 import graphids.exp.config
-from graphids.exp.runtime import resolve_spec
+from graphids.exp.run import resolve_spec
 
 resolve_spec({'type': 'event_graph_mamba'})
 resolve_spec({
