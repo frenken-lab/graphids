@@ -436,7 +436,14 @@ def test_epoch_boundary_resume_matches_uninterrupted_optimizer_and_rng(
     def new_model():
         torch.manual_seed(42)
         net = EventGraphMamba(
-            width=8, layers=1, d_state=3, expand=1, backend="reference", dropout=0.2
+            width=8,
+            layers=1,
+            d_state=3,
+            expand=1,
+            backend="reference",
+            dropout=0.2,
+            schema_version=1,
+            use_id_gap=False,
         )
         net.prepare_from_datamodule(dm)
         return net
@@ -815,7 +822,14 @@ def test_cuda_prefetch_preserves_scores_gradients_and_dropout_rng(tmp_path):
         torch.manual_seed(42)
         net = (
             EventGraphMamba(
-                width=8, layers=2, d_state=3, expand=1, backend="official", dropout=0.2
+                width=8,
+                layers=2,
+                d_state=3,
+                expand=1,
+                backend="official",
+                dropout=0.2,
+                schema_version=1,
+                use_id_gap=False,
             )
             .cuda()
             .train()
@@ -887,7 +901,7 @@ def test_gate_defaults_follow_public_configuration_and_explicit_overrides():
     options = benchmark_options(args)
     assert options["chunks"] == [16384]
     assert options["stream_counts"] == [1]
-    assert options["effective_events"] == options["max_microbatch_events"] == 16384
+    assert options["effective_events"] == options["max_microbatch_events"] == 65536
     assert options["workers"] == 2 and options["persistent_workers"]
     assert options["pin_memory"] and not options["cuda_prefetch"]
     args.workers, args.cuda_prefetch, args.chunks = 0, True, [32768]

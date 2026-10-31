@@ -1,5 +1,6 @@
 """Typed configuration for the shared graph-Mamba detector."""
 
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,27 +26,38 @@ class EventGraphMambaConfig(BaseModel):
     positive_weight: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     node_capacity: int = Field(default=512, ge=1)
     max_graph_tokens: int = Field(default=defaults.MAX_GRAPH_TOKENS, ge=1)
-    use_elapsed_time: bool = True
-    timing_mode: Literal["raw", "normalized"] = "raw"
-    use_id_gap: bool = False
-    payload_context: Literal["none", "delta", "xor", "both"] = "none"
-    graph_age: bool = False
-    graph_age_scale: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    use_id_gap: bool = True
     timing_min_support: int = Field(default=32, ge=1)
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2] = 2
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_selected_and_legacy_checkpoints(cls, value):
+        """Strip retired neutral flags; reject checkpoints for removed variants."""
+        if not isinstance(value, Mapping):
+            return value
+        value = dict(value)
+        for name, neutral in (
+            ("use_elapsed_time", True),
+            ("timing_mode", "raw"),
+            ("payload_context", "none"),
+            ("graph_age", False),
+            ("graph_age_scale", 1.0),
+        ):
+            if name in value and value.pop(name) != neutral:
+                raise ValueError(
+                    f"{name} variant is retired; use its frozen source snapshot"
+                )
+        # Schema 1 predates per-ID context. Preserve historical checkpoint identity.
+        if value.get("schema_version") == 1:
+            value.setdefault("use_id_gap", False)
+        return value
 
     @model_validator(mode="after")
     def validate_feature_schema(self):
-        changed = (
-            not self.use_elapsed_time
-            or self.timing_mode != "raw"
-            or self.use_id_gap
-            or self.payload_context != "none"
-            or self.graph_age
-        )
-        if changed and self.schema_version != 2:
+        if self.use_id_gap != (self.schema_version == 2):
             raise ValueError(
-                "local-context and timing ablations require model schema_version=2"
+                "per-ID gap requires model schema_version=2; legacy baseline uses schema_version=1"
             )
         return self
 

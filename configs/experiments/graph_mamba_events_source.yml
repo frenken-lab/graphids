@@ -1,11 +1,11 @@
-# Single-A100 continuous event preset selected by bounded source throughput checks.
-experiment_name: graph_mamba_events_source_seed42
+# Single-A100 per-ID timing-gap candidate selected by the October 30 ablations.
+experiment_name: graph_mamba_events_id_gap_seed42
 dataset: pooled_can
 seed: 42
 stage: fit
 representation_cfg:
   kind: can_event
-  schema_version: 1
+  schema_version: 2
 resources:
   cluster: ascend
   partition: nextgen
@@ -19,6 +19,10 @@ resources:
 config:
   model:
     type: event_graph_mamba
+    schema_version: 2
+    use_id_gap: true
+    positive_weight: 1.0
+    max_graph_tokens: 8388608
     width: 128
     layers: 2
     backend: official
@@ -26,7 +30,6 @@ config:
     # Frame BCE plus normal-only categorical byte likelihood.
     payload_weight: 1.0
     node_capacity: 512
-    max_graph_tokens: 2097152
   data:
     type: can_event_dm
     manifest_path: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-multiattack-review-v1/can-recording-manifest-v1.json
@@ -34,11 +37,11 @@ config:
     cache_root: /fs/ess/PAS1266/graphids/dev/rf15/experimentruns/graph-mamba-events-source-v1/cache
     representation_cfg:
       kind: can_event
-      schema_version: 1
+      schema_version: 2
     chunk_events: 16384
     stream_batch_size: 1
-    effective_batch_events: 16384
-    max_microbatch_events: 16384
+    effective_batch_events: 65536
+    max_microbatch_events: 65536
     num_workers: 2
     prefetch_factor: 2
     persistent_workers: true
@@ -47,7 +50,7 @@ config:
   trainer:
     accelerator: gpu
     devices: 1
-    max_epochs: 10
+    max_epochs: 25
     precision: 32-true
     use_distributed_sampler: false
     num_sanity_val_steps: 2

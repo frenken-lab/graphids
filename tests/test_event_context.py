@@ -1,4 +1,4 @@
-"""Independent causal observation, age-aware readout, and fitted-state checks."""
+"""Selected per-ID timing-gap causality, readout, and checkpoint contracts."""
 
 from copy import copy, deepcopy
 from dataclasses import replace
@@ -26,11 +26,7 @@ def context_model(dm, **options):
         dropout=0,
         backend="reference",
         schema_version=2,
-        use_elapsed_time=False,
-        timing_mode="normalized",
         use_id_gap=True,
-        payload_context="both",
-        graph_age=True,
         timing_min_support=2,
     )
     kwargs.update(options)
@@ -66,8 +62,6 @@ def test_context_matches_physical_predecessors_across_slices_and_payload_lengths
             assert (
                 full.context.gaps[row] == full.timestamps[row] - full.timestamps[prior]
             )
-            torch.testing.assert_close(full.context.payload[row], full.payload[prior])
-            assert full.context.lengths[row] == full.lengths[prior]
         latest[key] = row
     assert events.previous_rows.tolist() == [
         -1 if row is None else row for row in expected
@@ -153,9 +147,6 @@ def test_context_stream_outputs_states_and_gradients_match_serial_oracle(
             torch.testing.assert_close(
                 state.nodes, serial_state.nodes, rtol=5e-4, atol=5e-5
             )
-            torch.testing.assert_close(
-                state.node_timestamps, serial_state.node_timestamps, rtol=0, atol=0
-            )
             actual_loss = actual_loss + serial_loss(net, output, batch)
             expected_loss = expected_loss + serial_loss(oracle, reference, batch)
     actual_loss.backward()
@@ -165,7 +156,6 @@ def test_context_stream_outputs_states_and_gradients_match_serial_oracle(
     ):
         assert p.grad is not None, name
         torch.testing.assert_close(p.grad, q.grad, rtol=3e-3, atol=3e-4, msg=name)
-    assert net.age_decay.grad.abs() > 0
     # Independent stream state and output also agree with a complete chronological scan.
     full = [record.batch(0, 6).to(execution) for record in records]
     whole, whole_states = net.scan(full)
@@ -181,29 +171,18 @@ def test_context_stream_outputs_states_and_gradients_match_serial_oracle(
                 rtol=5e-4,
                 atol=5e-5,
             )
-        torch.testing.assert_close(
-            state.node_timestamps, whole_states[stream].node_timestamps, rtol=0, atol=0
-        )
+        torch.testing.assert_close(state.nodes, whole_states[stream].nodes)
         assert state.recording == record.recording.key
 
 
-def test_payload_differences_are_masked_and_do_not_leak_into_forecasts(tmp_path):
+def test_current_payload_does_not_leak_into_forecasts(tmp_path):
     dm = source_dm(
         tmp_path, representation_cfg=CANEventRepresentationConfig(schema_version=2)
     )
     net = context_model(dm).eval()
     events = list(dm.event_recordings.values())[0]
     batch = events.batch(0, 6)
-    fields, header = net.fields(batch)
-    # Last 80 features are validity[8], signed delta[8], XOR bits[64].
-    valid = fields[:, -80:-72]
-    assert not valid[0].any() and not valid[3].any()
-    assert not valid[5].any()  # current payload has zero bytes
-    changed = replace(
-        batch, context=replace(batch.context, payload=batch.context.payload.clone())
-    )
-    changed.context.payload[valid == 0] = 255
-    torch.testing.assert_close(net.fields(changed)[0], fields, rtol=0, atol=0)
+    _, header = net.fields(batch)
     # Perturb raw traffic and rebuild all derived context to avoid stale metadata.
     altered = copy(events)
     altered.arrays = {k: np.array(v) for k, v in events.arrays.items()}
@@ -287,50 +266,89 @@ def test_context_checkpoint_preserves_normalizers_and_exact_optimizer_rng_resume
             torch.testing.assert_close(a[key], b[key], rtol=0, atol=0)
 
 
-def test_ablation_configs_are_isolated_and_require_explicit_schemas(tmp_path):
+def test_selected_preset_and_defaults_require_representation_v2(tmp_path):
     from pathlib import Path
 
     import yaml
 
     from graphids.exp.config import ExperimentConfig, RunPayload
     from graphids.models.config import EventGraphMambaConfig
-    from scripts.event_context_ablation import experiments
 
     base = yaml.safe_load(
         Path("configs/experiments/graph_mamba_events_source.yml").read_text()
     )
-    arms = list(experiments(base, seed=43))
-    assert len(arms) == 7
+    ExperimentConfig.model_validate(base)
+    assert EventGraphMambaConfig().use_id_gap
+    assert EventGraphMambaConfig().schema_version == 2
     dm = source_dm(
         tmp_path, representation_cfg=CANEventRepresentationConfig(schema_version=2)
     )
+    net = context_model(dm)
     batch = next(iter(dm.val_dataloader()))
-    for arm in arms:
-        ExperimentConfig.model_validate(arm)
-        payload = arm["config"]
-        RunPayload.model_validate(payload)
-        assert arm["seed"] == 43
-        assert payload["trainer"] == base["config"]["trainer"]
-        assert payload["data"]["chunk_events"] == base["config"]["data"]["chunk_events"]
-        options = dict(payload["model"], width=8, layers=1, backend="reference")
-        net = EventGraphMambaConfig.model_validate(options).build()
-        net.prepare_from_datamodule(dm)
-        output = net(batch)
-        assert output["payload_logits"].shape == (len(batch.ids), 8, 256)
-        assert all(torch.isfinite(value).all() for value in output.values())
-    for option in (
-        dict(use_elapsed_time=False),
-        dict(timing_mode="normalized"),
-        dict(use_id_gap=True),
-        dict(payload_context="delta"),
-        dict(graph_age=True),
-    ):
-        with pytest.raises(ValueError, match="schema_version=2"):
-            EventGraphMambaConfig(**option)
-    invalid = deepcopy(arms[3]["config"])
+    fields, header = net.fields(batch)
+    assert fields.shape == (len(batch.ids), 51)
+    assert header.shape == (len(batch.ids), 35)
+    invalid = deepcopy(base["config"])
     invalid["data"]["representation_cfg"]["schema_version"] = 1
     with pytest.raises(ValueError, match="representation schema_version=2"):
         RunPayload.model_validate(invalid)
+    # Omitting the model's flags must still validate the actual selected defaults.
+    invalid["model"] = {"type": "event_graph_mamba"}
+    with pytest.raises(ValueError, match="representation schema_version=2"):
+        RunPayload.model_validate(invalid)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        dict(use_elapsed_time=False),
+        dict(timing_mode="normalized"),
+        dict(payload_context="delta"),
+        dict(payload_context="xor"),
+        dict(payload_context="both"),
+        dict(graph_age=True),
+    ],
+)
+def test_removed_variants_fail_explicitly(options):
+    from graphids.models.config import EventGraphMambaConfig
+
+    with pytest.raises(ValueError, match="variant is retired"):
+        EventGraphMambaConfig(**options)
+    with pytest.raises(ValueError, match="variant is retired"):
+        EventGraphMamba(backend="reference", **options)
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_historical_neutral_flags_preserve_checkpoint_identity(tmp_path, schema):
+    dm = source_dm(
+        tmp_path, representation_cfg=CANEventRepresentationConfig(schema_version=2)
+    )
+    net = context_model(dm, schema_version=schema, use_id_gap=schema == 2)
+    checkpoint = {}
+    net.on_save_checkpoint(checkpoint)
+    old_flags = dict(
+        use_elapsed_time=True,
+        timing_mode="raw",
+        payload_context="none",
+        graph_age=False,
+        graph_age_scale=1.0,
+    )
+    checkpoint["event_input_contract"]["model_config"].update(old_flags)
+    import lightning.pytorch as pl
+
+    path = tmp_path / f"historical-schema{schema}.ckpt"
+    checkpoint.update(
+        state_dict=net.state_dict(),
+        hyper_parameters=dict(net.hparams) | old_flags,
+        **{"pytorch-lightning_version": pl.__version__},
+    )
+    torch.save(checkpoint, path)
+    loaded = EventGraphMamba.load_from_checkpoint(path)
+    loaded.prepare_from_datamodule(dm)
+    assert not set(old_flags) & set(loaded.hparams)
+    batch = next(iter(dm.val_dataloader()))
+    for key, value in net(batch).items():
+        torch.testing.assert_close(loaded(batch)[key], value, rtol=0, atol=0)
 
 
 def test_invalid_fitted_statistics_and_incompatible_feature_checkpoints_are_rejected(
@@ -342,10 +360,12 @@ def test_invalid_fitted_statistics_and_incompatible_feature_checkpoints_are_reje
     net = context_model(dm)
     checkpoint = {}
     net.on_save_checkpoint(checkpoint)
-    old = EventGraphMamba(width=8, backend="reference")
+    old = EventGraphMamba(
+        width=8, backend="reference", schema_version=1, use_id_gap=False
+    )
     with pytest.raises(ValueError, match="incompatible"):
         old.on_load_checkpoint(checkpoint)
-    changed = context_model(dm, graph_age=False)
+    changed = context_model(dm, timing_min_support=3)
     with pytest.raises(ValueError, match="configuration differs"):
         changed.on_load_checkpoint(checkpoint)
     corrupted = {name: value.clone() for name, value in net.state_dict().items()}

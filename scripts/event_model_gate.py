@@ -40,7 +40,8 @@ def source_provenance(root):
         diff = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=root)
         names = subprocess.check_output(
             ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-            cwd=root, text=True,
+            cwd=root,
+            text=True,
         ).splitlines()
     hashes = {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest()
@@ -196,7 +197,9 @@ def benchmark(
     ]
     import hashlib
 
-    git_head, diff, source_hashes = source_provenance(Path(__file__).resolve().parents[1])
+    git_head, diff, source_hashes = source_provenance(
+        Path(__file__).resolve().parents[1]
+    )
     (output / "working-tree.diff").write_bytes(diff)
     (output / "configuration.yml").write_bytes(Path(config).read_bytes())
     persist(output / "source-sha256.json", source_hashes)
@@ -701,7 +704,7 @@ def public_smoke(output, *, selected_config=None):
         experiment_name="event-public-smoke",
         dataset="fixture",
         seed=42,
-        representation_cfg=dict(kind="can_event", schema_version=1),
+        representation_cfg=dict(kind="can_event", schema_version=2),
         resources=dict(accelerator="gpu", cpus_per_worker=2, gpus_per_worker=1),
         config=dict(
             model=dict(
@@ -715,6 +718,7 @@ def public_smoke(output, *, selected_config=None):
             ),
             data=dict(
                 type="can_event_dm",
+                representation_cfg=dict(kind="can_event", schema_version=2),
                 manifest_path=str(manifest),
                 datasets=["set_01"],
                 cache_root=str(output / "smoke-cache"),

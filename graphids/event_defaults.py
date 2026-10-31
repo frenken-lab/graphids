@@ -1,12 +1,12 @@
-"""Measured single-GPU event defaults, shared by constructors and typed config."""
+"""Selected single-GPU event defaults, shared by constructors and typed config."""
 
 CHUNK_EVENTS = 16384
 STREAM_BATCH_SIZE = 1
-EFFECTIVE_BATCH_EVENTS = 16384
-MAX_MICROBATCH_EVENTS = 16384
+EFFECTIVE_BATCH_EVENTS = 65536
+MAX_MICROBATCH_EVENTS = 65536
 NUM_WORKERS = 2
 PIN_MEMORY = True
 PREFETCH_FACTOR = 2
 PERSISTENT_WORKERS = True
 CUDA_PREFETCH = False
-MAX_GRAPH_TOKENS = 2097152
+MAX_GRAPH_TOKENS = 8388608

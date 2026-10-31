@@ -1,6 +1,6 @@
 """Summarize a submitted event suite without loading weights or retuning thresholds.
 
-python scripts/event_ablation_report.py /path/to/suite.json
+python scripts/event_suite_report.py /path/to/suite.json
 Only complete, comparable fits produce a complete comparison. Partial learning
 curves remain visible, and the reported 0.5 operating point is diagnostic only.
 """
@@ -46,12 +46,27 @@ def summarize_run(config, run_dir):
         ap = metrics.get("classification_frame_ap")
         if ap is None or not math.isfinite(ap):
             raise ValueError(f"missing finite classification AP: {path}")
+        recording_ap = {}
+        for name, group in index["by_recording"].items():
+            if group["classification_positives"] and group["classification_negatives"]:
+                value = group.get("classification_frame_ap")
+                if value is None or not math.isfinite(value):
+                    raise ValueError(f"missing finite recording AP: {name}: {path}")
+                recording_ap[name] = value
         epochs.append(
             dict(
                 epoch=int(path.parent.name.removeprefix("val-events-epoch")),
                 index=str(path),
                 metrics=metrics,
                 by_recording=index["by_recording"],
+                recording_macro_ap=(
+                    math.fsum(recording_ap.values()) / len(recording_ap)
+                    if recording_ap
+                    else None
+                ),
+                recordings_by_ap=sorted(
+                    recording_ap, key=lambda name: (recording_ap[name], name)
+                ),
             )
         )
     expected = config["config"]["trainer"]["max_epochs"]
@@ -121,7 +136,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suite", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--phase", choices=("controls", "context"))
+    parser.add_argument("--phase", choices=("candidate", "controls", "context"))
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
     report = suite_report(args.suite, phase=args.phase)
@@ -133,11 +148,23 @@ def main():
     for arm in report["arms"]:
         best = arm.get("best")
         detail = (
-            f"best AP={best['metrics']['classification_frame_ap']:.6f}, epoch={best['epoch'] + 1}"
+            f"best AP={best['metrics']['classification_frame_ap']:.6f}, "
+            f"recording macro AP={best['recording_macro_ap']}, epoch={best['epoch'] + 1}"
             if best
             else "no complete validation epoch"
         )
         print(f"{arm['job_id']} {arm['status']}: {detail}")
+        if best:
+            for name in best["recordings_by_ap"][:3]:
+                group = best["by_recording"][name]
+                payload = "untrained"
+                if arm["payload_trained"]:
+                    ap = group.get("payload_frame_ap")
+                    payload = "undefined" if ap is None else f"{ap:.6f}"
+                    payload += f" ({group['payload_frames']}/{group['classification_frames']} known rows)"
+                print(
+                    f"  {name}: classification AP={group['classification_frame_ap']:.6f}, payload AP={payload}"
+                )
     if args.require_complete and report["status"] != "complete":
         raise SystemExit(1)
 

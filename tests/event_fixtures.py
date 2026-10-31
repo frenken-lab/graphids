@@ -70,6 +70,7 @@ def model(backend="reference", **kwargs):
     from graphids.models.event_graph_mamba import EventGraphMamba
 
     torch.manual_seed(42)
+    kwargs = dict(schema_version=1, use_id_gap=False) | kwargs
     return EventGraphMamba(
         width=8,
         layers=2,

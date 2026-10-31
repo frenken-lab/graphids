@@ -37,9 +37,7 @@ def serial_readout(model, h, header, batch, state):
     bank = torch.cat((past, h))
     keys, values, query = model.key(bank), model.value(bank), model.query(h)
     # Serial multiply/reduce formula, independently tiled to fit large checks.
-    bytes_per_node = 4 * h.shape[-1] * h.element_size() + (
-        24 if model.hparams.graph_age else 0
-    )
+    bytes_per_node = 4 * h.shape[-1] * h.element_size()
     tile = max(1, (256 * 1024**2) // (len(ids) * bytes_per_node))
     aggregates = []
     for lo in range(0, len(h), tile):
@@ -48,21 +46,6 @@ def serial_readout(model, h, header, batch, state):
         logits = (query[lo : lo + tile, None] * keys[ix.clamp_min(0)]).sum(
             -1
         ) / math.sqrt(h.shape[-1])
-        if model.hparams.graph_age:
-            timestamps = torch.cat(
-                (
-                    state.node_timestamps
-                    if state.node_timestamps is not None
-                    else batch.timestamps[:0],
-                    batch.timestamps,
-                )
-            )
-            ages = batch.timestamps[lo : lo + tile, None] - timestamps[ix.clamp_min(0)]
-            logits = (
-                logits
-                - F.softplus(model.age_decay)
-                * torch.log1p(ages.clamp_min(0) / model.hparams.graph_age_scale).float()
-            )
         weights = (
             logits.masked_fill(~mask, torch.finfo(logits.dtype).min).softmax(-1) * mask
         )
@@ -158,16 +141,6 @@ def serial_scan(model, batches, states=None, *, detach=False):
                 ids,
                 learn(nodes),
                 learn(h[0, -1]),
-                torch.cat(
-                    (
-                        state.node_timestamps
-                        if state.node_timestamps is not None
-                        else batch.timestamps[:0],
-                        batch.timestamps,
-                    )
-                )[serial_routing(batch, state)[3]]
-                if model.hparams.graph_age
-                else None,
             )
         )
         outputs.append(output)

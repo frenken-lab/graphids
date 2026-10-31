@@ -1,4 +1,4 @@
-"""Frozen source, training-only weighting, and scheduler dependency contracts."""
+"""Frozen candidate source, source-only cohorts, and job dependency contracts."""
 
 import hashlib
 import json
@@ -25,8 +25,13 @@ def source_fixture(tmp_path):
         path = tmp_path / f"{key}.csv"
         path.write_text(key)
         rec = Recording(
-            key=key, dataset="fixture", vehicle="source", session=key,
-            path=str(path), sha256=file_hash(path), role=role,
+            key=key,
+            dataset="fixture",
+            vehicle="source",
+            session=key,
+            path=str(path),
+            sha256=file_hash(path),
+            role=role,
             verified_normal=normal,
         )
         records.append(rec)
@@ -35,37 +40,55 @@ def source_fixture(tmp_path):
         ).hexdigest()
         cache = cache_root / f"event-v1-{digest}"
         cache.mkdir(parents=True)
-        (cache / "metadata.json").write_text(json.dumps(dict(
-            digest=digest, count=len(labels), recording=asdict(rec), schema_version=1
-        )))
+        (cache / "metadata.json").write_text(
+            json.dumps(
+                dict(
+                    digest=digest,
+                    count=len(labels),
+                    recording=asdict(rec),
+                    schema_version=1,
+                )
+            )
+        )
         np.save(cache / "labels.npy", np.asarray(labels, dtype=np.int64))
         np.save(cache / "ids.npy", np.arange(len(labels), dtype=np.int64))
     # Metadata is allowed; opening this reserved target path would fail.
-    records.append(Recording(
-        key="reserved", dataset="fixture", vehicle="target", session="reserved",
-        path=str(tmp_path / "target-must-not-be-opened.csv"), sha256="f" * 64,
-        role="target_attack_test",
-    ))
+    records.append(
+        Recording(
+            key="reserved",
+            dataset="fixture",
+            vehicle="target",
+            session="reserved",
+            path=str(tmp_path / "target-must-not-be-opened.csv"),
+            sha256="f" * 64,
+            role="target_attack_test",
+        )
+    )
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps(asdict(CANRecordingManifest(
-        tuple(records), provenance_reviewed=True
-    ))))
-    base = yaml.safe_load(Path(
-        "configs/experiments/graph_mamba_events_source.yml"
-    ).read_text())
+    manifest.write_text(
+        json.dumps(
+            asdict(CANRecordingManifest(tuple(records), provenance_reviewed=True))
+        )
+    )
+    base = yaml.safe_load(
+        Path("configs/experiments/graph_mamba_events_source.yml").read_text()
+    )
     base["config"]["data"].update(
         manifest_path=str(manifest), cache_root=str(cache_root), datasets=["fixture"]
     )
     return base
 
 
-def test_weight_is_training_only_and_reserved_targets_are_never_opened(tmp_path):
+def test_cohort_is_source_only_and_reserved_targets_are_never_opened(tmp_path):
     result = quality.cohort(source_fixture(tmp_path))
     assert result["training_rows"] == 7
     assert result["validation_rows"] == 3
-    assert result["positive_weight"] == 6.0
+    assert result["training_positives"] == 1
+    assert result["training_negatives"] == 6
     assert {r["recording"] for r in result["recordings"]} == {
-        "attack", "normal", "selection"
+        "attack",
+        "normal",
+        "selection",
     }
 
 
@@ -78,10 +101,20 @@ def prepared_suite(tmp_path, monkeypatch):
     (repo / "graphids/runtime.py").write_text("version = 1\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run([
-        "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-        "commit", "-qm", "fixture",
-    ], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
     # Dirty and untracked runtime files must both reach the source snapshot.
     (repo / "graphids/runtime.py").write_text("version = 2\n")
     (repo / "graphids/untracked.py").write_text("new_feature = True\n")
@@ -91,17 +124,22 @@ def prepared_suite(tmp_path, monkeypatch):
     return root, suite, repo
 
 
-def test_preparation_matches_budgets_reuses_baseline_and_freezes_dirty_source(
+def test_preparation_keeps_only_selected_candidate_and_freezes_dirty_source(
     tmp_path, monkeypatch
 ):
     root, suite, repo = prepared_suite(tmp_path, monkeypatch)
     jobs = suite["training_jobs"]
-    assert len(jobs) == 11
-    assert sum("controls" in j["phases"] for j in jobs) == 5
-    assert sum("context" in j["phases"] for j in jobs) == 7
+    assert len(jobs) == 1
+    assert jobs[0]["phases"] == ["candidate"]
+    assert suite["expected_prediction_bytes"] == 3 * 6 * 8 * 25
     for job in jobs:
         cfg = yaml.safe_load(Path(job["config"]).read_text())
         assert cfg["seed"] == 43
+        assert cfg["config"]["model"]["use_id_gap"] is True
+        assert cfg["config"]["model"]["positive_weight"] == 1
+        assert cfg["config"]["model"]["payload_weight"] == 1
+        assert cfg["config"]["data"]["stream_batch_size"] == 1
+        assert cfg["representation_cfg"]["schema_version"] == 2
         assert cfg["config"]["trainer"]["max_epochs"] == 25
         assert cfg["config"]["data"]["effective_batch_events"] == 65536
         assert cfg["config"]["model"]["max_graph_tokens"] == 8388608
@@ -125,7 +163,7 @@ def test_preparation_matches_budgets_reuses_baseline_and_freezes_dirty_source(
         quality.verify(root)
 
 
-def test_submission_blocks_context_on_complete_controls_and_keeps_job_receipts(
+def test_submission_gates_one_fit_and_reports_without_extra_variants(
     tmp_path, monkeypatch
 ):
     root, _, _ = prepared_suite(tmp_path, monkeypatch)
@@ -138,22 +176,14 @@ def test_submission_blocks_context_on_complete_controls_and_keeps_job_receipts(
     monkeypatch.setattr(quality.subprocess, "check_output", sbatch)
     suite = quality.submit(root)
     assert suite["status"] == "submitted"
-    assert len(commands) == 15  # Two gates, eleven fits, two reports.
+    assert len(commands) == 3  # One CUDA gate, one fit, one report.
     assert all("--kill-on-invalid-dep=yes" in c for c in commands)
-    control_gate, context_gate = suite["gates"]
-    assert f"--dependency=afterok:{control_gate['job_id']}" in commands[1]
-    control_jobs = [j for j in suite["training_jobs"] if "controls" in j["phases"]]
-    for job in control_jobs:
-        assert f"--dependency=afterok:{control_gate['job_id']}" in job["submit_command"]
-    control_report = suite["reports"][0]
-    assert "--dependency=afterany:" + ":".join(
-        j["job_id"] for j in control_jobs
-    ) in control_report["submit_command"]
-    assert "--require-complete" in Path(control_report["script"]).read_text()
-    for job in suite["training_jobs"]:
-        if job["phases"] == ["context"]:
-            assert (f"--dependency=afterok:{context_gate['job_id']}:"
-                    f"{control_report['job_id']}") in job["submit_command"]
+    (gate,) = suite["gates"]
+    (fit,) = suite["training_jobs"]
+    (report,) = suite["reports"]
+    assert f"--dependency=afterok:{gate['job_id']}" in fit["submit_command"]
+    assert f"--dependency=afterany:{fit['job_id']}" in report["submit_command"]
+    assert "--require-complete" in Path(report["script"]).read_text()
     with pytest.raises(ValueError, match="already submitted"):
         quality.submit(root)
 

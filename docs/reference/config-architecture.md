@@ -34,17 +34,19 @@ experiment file. Shared partial configs live in `configs/experiments/_base/`;
 launch a leaf experiment rather than a base.
 
 ```yaml
-experiment_name: graph_mamba_events_source_seed42
+experiment_name: graph_mamba_events_id_gap_seed42
 dataset: pooled_can
 seed: 42
 stage: fit
 representation_cfg:
   kind: can_event
-  schema_version: 1
+  schema_version: 2
 config:
   model:
     type: event_graph_mamba
-    max_graph_tokens: 2097152
+    schema_version: 2
+    use_id_gap: true
+    max_graph_tokens: 8388608
   data:
     type: can_event_dm
     manifest_path: /path/to/reviewed-manifest.json
@@ -52,8 +54,8 @@ config:
     cache_root: /path/to/event-cache
     chunk_events: 16384
     stream_batch_size: 1
-    effective_batch_events: 16384
-    max_microbatch_events: 16384
+    effective_batch_events: 65536
+    max_microbatch_events: 65536
     num_workers: 2
     prefetch_factor: 2
     persistent_workers: true

@@ -159,7 +159,7 @@ class RunPayload(_StrictModel):
         if self.model.get("type") == "event_graph_mamba":
             from graphids.models.config import EventGraphMambaConfig
 
-            EventGraphMambaConfig.model_validate(self.model)
+            model_config = EventGraphMambaConfig.model_validate(self.model)
             if self.data.get("type") != "can_event_dm":
                 raise ValueError("event_graph_mamba requires can_event_dm")
         if self.data.get("type") == "can_event_dm":
@@ -169,9 +169,9 @@ class RunPayload(_StrictModel):
             if self.model.get("type") != "event_graph_mamba":
                 raise ValueError("can_event_dm requires event_graph_mamba")
             if (
-                self.model.get("use_id_gap", False)
-                or self.model.get("payload_context", "none") != "none"
-            ) and data_config.representation_cfg.schema_version != 2:
+                model_config.use_id_gap
+                and data_config.representation_cfg.schema_version != 2
+            ):
                 raise ValueError(
                     "per-ID context requires can_event representation schema_version=2"
                 )

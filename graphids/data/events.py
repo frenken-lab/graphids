@@ -167,11 +167,9 @@ def prepare_routing(recording, digest, start, event_ids, incoming_ids):
 
 @dataclass
 class EventLocalContext(_TensorFields):
-    """Raw preceding same-ID observations; first-seen rows have seen=False."""
+    """Preceding same-ID timing; first-seen rows have seen=False."""
 
     gaps: torch.Tensor  # FP64 physical seconds
-    payload: torch.Tensor  # preceding uint8 bytes; lengths define validity
-    lengths: torch.Tensor
     seen: torch.Tensor
 
     def slice(self, start, stop):
@@ -287,8 +285,6 @@ class EventRecording:
             rows = previous.clip(min=0)
             batch.context = EventLocalContext(
                 torch.from_numpy(np.where(seen, physical - arrays["times"][rows], 0)),
-                torch.from_numpy(np.array(arrays["payload"][rows])),
-                torch.from_numpy(np.where(seen, arrays["lengths"][rows], 0)),
                 torch.from_numpy(seen.copy()),
             )
         return batch

@@ -11,7 +11,7 @@ def test_defaults_to_event_representation():
     assert mlflow_tags(run)["graphids.phase"] == "fit"
     assert mlflow_hparams(run)["graphids.representation_cfg"] == {
         "kind": "can_event",
-        "schema_version": 1,
+        "schema_version": 2,
     }
 
 

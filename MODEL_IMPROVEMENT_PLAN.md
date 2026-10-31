@@ -1,638 +1,421 @@
-# CAN event model: improvement checklist and implementation plan
+# CAN event model: evidence and implementation plan
 
-Updated: 2026-10-30. Scope: improve detection quality in the active
-`can_event_dm` / `event_graph_mamba` pipeline. This document records the research
-recommendations and proposed implementations; unchecked items are not implemented.
-It does not authorize a claim of improved accuracy before the experiments finish.
+Updated: 2026-10-31. Research reviewed through this date.
 
-## 1. Evidence and constraints
+The active candidate is **raw CAN frames plus normalized per-ID timing gap**, with
+one stream, ordinary BCE and the joint normal-payload objective. Keep this path
+small. The October 30 comparison is complete; weaker feature branches and their
+generators were retired on October 31. Future improvements below are proposals,
+not implemented features or demonstrated gains. This update does not submit jobs.
 
-The latest full fit was Ascend job **7894453**, completed on October 16 after
-25 epochs and 13,150 optimizer steps. Its source validation cohort contains
-12,758,965 frames, including 36,484 attack frames (0.286%).
+## 1. Current implementation and operating constraints
 
-| Validation metric | Best AP checkpoint, epoch 20 | Final checkpoint, epoch 25 |
-| --- | ---: | ---: |
-| Classification AP | 0.1436 | 0.0737 |
-| Classification ROC-AUC | 0.9160 | 0.9353 |
-| Recall at threshold 0.5 | 3.43% | 0% |
-| F1 at threshold 0.5 | 0.0664 | 0 |
-| True positives / false positives at 0.5 | 1,252 / 0 | 0 / 0 |
-| Payload anomaly ROC-AUC | 0.2754 | 0.2067 |
+The active preset is
+[`configs/experiments/graph_mamba_events_source.yml`](configs/experiments/graph_mamba_events_source.yml).
+Its model and representation use schema 2: 51 observation fields, a 35-field
+forecast header, width 128, two Mamba layers, dropout 0.1, one A100, 25 epochs,
+16,384-event chunks, a 65,536-event optimizer window and 8,388,608 graph tokens.
+The classifier retains raw elapsed/bus timing; normalized same-ID gap, normalizer
+support and first-seen indicators supplement the raw observations.
 
-The best validation-F1 threshold on epoch 20's own predictions is approximately
-0.00104: precision 72.2%, recall 13.3%, F1 0.2246. This is a diagnostic selected
-on the same validation data, not an independently evaluated operating point.
-Accuracy from predicting every frame normal is already 99.714%.
+- [x] Fit timing statistics only on reviewed, verified-normal `train_query` data.
+- [x] Keep fitted timing tables in checkpoints; evaluation never refits them.
+- [x] Preserve every physical row, all available ID bits, bytes, lengths and timestamps.
+- [x] Preserve chronological stream state, exact tails and unknown-label masks.
+- [x] Forecast current payload from preceding states and current header only.
+- [x] Report full-epoch loss totals with separate classification/normal-byte counts.
+- [x] Save aggregate and recording-level metrics and complete frame predictions.
+- [x] Refresh `last.ckpt` independently of best-score improvement, with SHA sidecars.
+- [x] Retain loading of the selected schema-2 and explicit schema-1 baseline checkpoints.
+- [x] Remove no-elapsed, normalized-bus, payload delta/XOR and graph-age branches,
+  preceding-payload copies and graph-age timestamps from active execution.
+- [x] Replace the control/context generators with one candidate workflow.
+- [x] Complete A100 verification of the October 31 cleanup; job 8238137 passed.
 
-Training has 8,526,701 labeled frames and 178,904 positives. About 93.2% of
-positives are DoS. Ten query recordings include only two verified-normal
-recordings. Frame count therefore overstates independent driving-state coverage.
-
-The previous `train/payload=0` reports were final-step values: that step used an
-attack recording where the payload objective was masked. They do not show that
-the payload branch received no training.
-
-Preserve the established [raw-message input requirement](docs/reference/graph-mamba-events.md):
-every observed ID, payload, length and timestamp must reach the model, in order.
-Derived timing/difference features below are optional ablations alongside raw
-inputs, not replacements for them. Learned per-ID context is the main architectural
-direction. Keep unknown labels unknown and all physical rows intact.
-
-### Current implementation status
-
-- [x] Add full-epoch classification/payload loss totals with separate target counts.
-- [x] Publish those totals before Ray's epoch-end reporting callback.
-- [x] Add configurable `positive_weight` (default 1) to frame BCE.
-- [x] Add aggregate ROC-AUC, confusion counts, precision, recall, F1 and FPR.
-- [x] Save per-recording metrics in validation `index.json`.
-- [x] Generate four matched weighting/interleaving configurations.
-- [x] Validate CPU behavior: 81 tests passed, 15 CUDA cases skipped; final focused
-  regression run passed 12 tests. These checks do not establish detection gains.
-- [x] Complete CUDA checks for the new loss/reporting changes (October 23 gate 8019984).
-- [x] Add an optional matched classification-only control (`payload_weight=0`).
-- [ ] Run the four training comparisons; submitted behind the CUDA gate on October 23.
-- [ ] Complete the model-quality experiments below.
-
-## 2. Define the prediction task before optimizing it
-
-- [ ] Keep attacker-frame attribution and contextual anomaly detection as separate tasks.
-- [ ] Define an alert aggregation rule and false-alert budget before tuning thresholds.
-- [ ] Obtain independently trusted attack intervals before claiming incident recall
-  or detection delay.
-- [ ] Keep unseen-vehicle and unseen-attack evaluations separate.
-
-An injected frame can trigger anomalous legitimate responses. Detecting those
-responses may be useful operationally while counting as a false positive under
-attacker-origin labels. Do not silently relabel every frame in an attack capture
-as malicious, infer trusted intervals from sparse origin labels, or reinterpret a
-positive time bin as proof of an unsafe vehicle state.
-
-Maintain three explicit evaluation products:
-
-1. **Frame attribution:** existing known origin labels; one score per observed row.
-2. **Time-window detection:** a declared aggregation of frame scores and a declared
-   window label rule. Report it as that proxy unless independently annotated.
-3. **Incident detection:** trusted intervals, matching rules and detection delay;
-   unavailable when interval ground truth is unavailable.
-
-The same observable ID/payload/history can sometimes arise from legitimate and
-malicious senders. If the available observations are identical, exact sender
-authenticity cannot be inferred from them alone. This is an information limit,
-not evidence that every attack in this cohort is indistinguishable.
-
-## 3. Finish the training controls
-
-- [ ] Run ordinary BCE versus weighted BCE, each with one and four streams.
-- [ ] Compare joint training with a matched one-stream, unweighted
-  classification-only control (`payload_weight=0`); this tests the effect of the
-  auxiliary objective, not the value of a separately pretrained encoder.
-- [ ] Add recording/family-balanced objective contributions as a separate ablation.
-- [ ] Randomize recording assignment per epoch while preserving each recording's chronology.
-- [ ] Repeat promising comparisons with seeds 42, 43 and 44.
-
-### Existing four-way comparison
-
-[`scripts/event_ablation.py`](scripts/event_ablation.py) generates four 25-epoch
-experiments. All use 16,384-event chunks, a 65,536-event effective optimizer
-window, seed 42, explicit checkpointing and 8,388,608 graph tokens. Only stream
-count and positive weighting differ. One stream accumulates chronological chunks;
-four streams interleave independent recordings. Neither drops or duplicates rows.
+Each newly prepared candidate uses **three jobs**: one CUDA gate, one fit after a
+successful gate, and one completeness report after the fit terminates. Nothing is
+submitted by preparation alone:
 
 ```bash
-.venv/bin/python scripts/event_ablation.py /path/to/new/comparison \
-  --positive-weight 46.660762196485265
-gx exp submit /path/to/new/comparison/event_ablation_streams1_weighted0_seed42.yml
+python -m scripts.event_quality_suite prepare OUTPUT --seed 43
+python -m scripts.event_quality_suite verify OUTPUT
+python -m scripts.event_quality_suite submit OUTPUT
+python -m scripts.event_quality_suite status OUTPUT
 ```
 
-Submit each generated YAML separately. The script refuses to overwrite existing
-files. Give repeated suites distinct experiment names as well as output folders.
-Prepared configs are under
-`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-quality-controls-20261023T174455Z/comparison/`.
+Use distinct output directories for repeat seeds. Source snapshots, expanded
+configs, reviewed manifests, dependency versions, hashes and submission receipts
+are frozen. Existing/partially submitted suites are not silently overwritten or
+resubmitted. The report is `candidate-results.json`;
+[`scripts/event_suite_report.py`](scripts/event_suite_report.py) also reads the
+historical controls/context suite without constructing retired model variants.
 
-Use `--classification-only` to generate an additional one-stream, unweighted arm
-with `payload_weight=0`; the original four arms remain unchanged. Its payload
-scores are untrained diagnostics and must not enter detector fusion or checkpoint
-selection.
+The raw-message and causal-state contract is described in
+[the event-model reference](docs/reference/graph-mamba-events.md). Numeric CAN IDs
+are not assumed to have common semantics across vehicles. Reserved target files
+remain excluded from development. Source-only transfer and target-normal
+adaptation are separate protocols. Missing-message detection needs timer-driven
+outputs; an observed-frame classifier cannot emit a score during complete silence.
 
-### October 23 execution
+## 2. What was tested and what worked
 
-Suite artifacts are under
-`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-quality-controls-20261023T174455Z/`.
-The suite preserves a working-source snapshot, file hashes, the tracked diff,
-dependency versions, expanded configurations and the reviewed training manifest.
-Recounting the ten current training caches confirms 178,904 positive and 8,347,797
-negative frames, giving `positive_weight=46.660762196485265`.
+### Matched October 30 suite
 
-| Arm | Ascend job |
-| --- | --- |
-| CUDA correctness, bounded one/four-stream weighted parity, public Ray smoke | 8019984 |
-| One stream, ordinary BCE, joint payload objective | 8020093 |
-| One stream, ordinary BCE, classification only | 8020097 |
-| One stream, weighted BCE, joint payload objective | 8020100 |
-| Four streams, ordinary BCE, joint payload objective | 8020104 |
-| Four streams, weighted BCE, joint payload objective | 8020107 |
-
-All five fits require successful completion of job 8019984 (`afterok`); an invalid
-dependency cancels them. Each fit has a unique experiment name, 25 epochs and the
-same chunk/optimizer-window controls described above. `suite.json` records job
-identities and paths. Submission is not completion or evidence of improved model
-quality. CPU regression job 56603752 on Pitzer passed 65 tests with 18 CUDA skips.
-The first CUDA attempt (8019139) passed 125 tests but failed two new assertions
-comparing CPU-reported Lightning metrics with CUDA expectations. The assertions
-now compare on CPU; dependent fits were automatically cancelled and resubmitted.
-The failed attempt is retained under `gate-attempt1/`. Corrected gate 8019984
-passed all 127 tests, independent weighted output/state/gradient parity for one
-and four streams, and the public Ray/Lightning smoke fit. The bounded benchmark
-used one repetition and 163,840 scored events per arm; it is a correctness/runtime
-check, not a model-quality comparison or a new production-throughput selection.
-
-[`scripts/event_ablation_report.py`](scripts/event_ablation_report.py) reads
-`suite.json` and complete epoch indices to generate `comparison-results.json`.
-It reports best-AP and final epochs, the learning curve, and per-recording metrics
-at the single selected epoch. A complete comparison requires finished fits with
-all expected epochs and matching physical-row/known-label populations. It does
-not fit thresholds or establish alert-budget performance.
-Report job 8020403 runs after all five fits terminate (`afterany`), including
-failure cases; the report remains incomplete unless every fit finishes all
-25 epochs with comparable evaluation populations. Four synthetic report checks
-passed for checkpoint selection, population mismatches and incomplete fits.
-
-**Terminal status audit:** all five fits failed. Baseline 8020093 completed nine
-validation epochs, then failed while writing epoch-10 score shards with
-`OSError: [Errno 122] Disk quota exceeded`. ESS reports 100,000/100,000 inodes
-used despite approximately 426 GiB of available space. Its last checkpoint
-survives and matches its saved SHA256. The other four fits and report job failed
-within one to three seconds with exit `0:53`, without application logs; the exact
-startup errors are unavailable. Scheduler failure also prevented the baseline's
-application manifest from being updated, leaving a stale `running` status.
-`suite.json` and `comparison-results.json` now include scheduler accounting and
-mark the comparison incomplete. The partial baseline's best AP is 0.03494 at
-epoch 6, with zero recall at the diagnostic 0.5 threshold. This is not a completed
-25-epoch comparison. Resolve output file-count pressure before resuming the
-baseline or rerunning the other arms; no jobs were resubmitted by this audit.
-
-### Output layout correction
-
-Artifact schema 2 now appends each epoch's complete frame predictions to one
-`scores.bin`, with recording/source/chunk offsets, coverage and metrics in
-`index.json`. FP64 values, physical row order and metric definitions are
-unchanged. There are two persistent prediction files per epoch, regardless of
-execution chunk count: 250 for the five 25-epoch fits instead of 98,125 NPZ shards
-plus indices. Metric scratch mappings use local `TMPDIR`.
-
-`scripts/pack_event_scores.py` migrates complete schema-1 epochs and optionally
-removes the old shards only after checking source identity, exact coverage and
-the packed-file SHA256. `iter_score_chunks` reads both formats. All 34 retained
-epochs (25 from the October 16 fit and nine from the interrupted baseline) were
-consolidated, preserving 433,804,810 score rows and their existing metrics.
-Best/last checkpoint checksums and all 30 reviewed source-file paths were
-verified afterward. No model checkpoint/input schema change is required.
-
-CPU integration passed 73 tests with 18 CUDA skips. Gate 8021017 passed 137 tests,
-weighted one/four-stream parity and the public Ray/Lightning smoke fit. These
-checks validate the storage change; the five-arm quality comparison remains
-incomplete. Cleanup inventories and verification receipts are under
-`/users/PAS2022/rf15/graphids-cleanup-audits/20261023T182040Z/`.
-
-Cleanup completed after byte-for-byte archive comparisons and archive SHA256
-checks. Historical runs and stale Slurm/default-run outputs were archived outside
-ESS before removal. Project loose-file count fell from 77,158 to 1,929, releasing
-about 83.4 GiB on ESS; filesystem inode use fell from 100% to 20% (80,503 free).
-`final-summary.json`, archive receipts and the original inventory record exact
-paths and counts. Raw/shared cached data, databases, reviewed inputs, the active
-event cache, the October 16 event baseline and the interrupted current suite were
-retained. The interrupted suite's original source snapshot still documents its
-schema-1 writer; retries must use a fresh source snapshot with the schema-2 writer.
-
-The weight is negative/positive frame count from this training cohort only.
-Recompute it for a different training manifest. The 65,536-event optimizer window
-differs from the original run's 16,384; compare these four arms against each other
-before attributing differences from the original run to weighting or interleaving.
-The shared loss helper also applies the weight to validation BCE; compare AP and
-operating-point metrics across arms rather than treating weighted/unweighted BCE
-as identical objectives.
-
-### Reproducible control retry and matched context suite
-
-`python -m scripts.event_quality_suite prepare OUTPUT` prepares eleven fresh
-seed-42 fits: the five controls above and six individual Section 4 feature arms.
-The ordinary-BCE, one-stream joint-objective arm is shared as the context
-baseline. Every fit uses 25 epochs, 16,384-event chunks, a 65,536-event optimizer
-window and 8,388,608 graph tokens. Other seeds are explicit via `--seed`.
-This is an exploratory comparison against the declared baseline; it does not
-automatically combine whichever controls or context features score best.
-
-Preparation verifies reviewed source files, recounts training-only labels,
-checks output-space/inode headroom and freezes runtime source (including dirty
-and untracked code), the reviewed manifest, expanded configs, file hashes and
-installed dependency versions. Reserved target files are never opened. Python
-dependencies use the existing environment and are checked for version changes
-before every job. Suite outputs and experiment names are unique; existing suites
-and partially submitted suites are not overwritten or silently resubmitted.
-
-`python -m scripts.event_quality_suite submit OUTPUT` submits two CUDA gates,
-eleven fits and two reports. All controls require the control gate to pass.
-Context fits additionally require a combined-feature gate and a complete control
-report. The control gate checks weighted one/four-stream parity; the context gate
-uses a tiny one/two-stream combined-feature correctness cohort. Both run the full
-test suite and public Ray/Lightning smoke. These bounded gates are not quality or
-production-throughput measurements. Invalid dependencies cancel pending jobs.
-Reports run after fits terminate, retain incomplete results and fail unless all
-expected epochs and evaluation populations match.
-
-`python -m scripts.event_quality_suite status OUTPUT` refreshes scheduler receipts
-and separate `controls-results.json` / `context-results.json` reports. A submitted
-suite remains pending evidence until the fits and reports finish successfully.
-No calibration, independent-test or alert-budget claim follows from these reports.
-
-**October 30 submission:** the frozen suite is under
+Evidence root:
 `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-quality-context-20261030T185508Z/`.
-Source verification recounted 8,526,701 training rows (178,904 positives and
-8,347,797 negatives) and 12,758,965 validation rows. All eleven fits together
-require approximately 156.85 GiB for packed prediction values; preparation found
-more than 500 GiB free. The CPU suite passed 104 tests, and 14 focused suite checks
-passed. Ruff, documentation symbol checks and shell syntax checks passed.
 
-| Job | Ascend ID |
+All **15 jobs completed with exit code 0**: two CUDA gates, eleven fresh fits and
+two reports. Each fit completed 25 validation epochs on exactly 12,758,965 frames:
+36,484 positive and 12,722,481 negative. Training contained 8,526,701 labeled
+frames, including 178,904 positives, across ten captures; only two captures were
+verified normal. DoS supplied 166,791 training positives (93.23%).
+
+The arms share seed 42, chunk length, optimizer-window size, graph capacity and
+training exposure. The context baseline reuses the ordinary-BCE one-stream fit.
+Best epochs maximize aggregate validation classification AP, choosing the earliest
+on ties. Epoch numbers below are one-based. These are exploratory source-validation
+results, selected over epochs and arms, not independent-test estimates.
+
+| Tested configuration | Ascend job | Best classification AP | Best epoch | Final AP | Decision |
+| --- | --- | ---: | ---: | ---: | --- |
+| One stream, ordinary BCE, joint objective | 8217868 | 0.047757 | 10 | 0.018840 | Matched historical baseline |
+| One stream, positive-weighted BCE | 8217869 | 0.070588 | 15 | 0.010163 | Retire generator arm |
+| Four streams, ordinary BCE | 8217870 | 0.433955 | 23 | 0.406115 | Retire generator arm |
+| Four streams, positive-weighted BCE | 8217871 | 0.179478 | 22 | 0.164425 | Retire generator arm |
+| One stream, classification only | 8217872 | 0.065888 | 9 | 0.001629 | Retire generator arm |
+| Remove elapsed recording time | 8217874 | 0.744381 | 25 | 0.744381 | Retire feature branch |
+| Normalize bus interarrival time | 8217875 | 0.805402 | 25 | 0.805402 | Retire feature branch |
+| **Normalized per-ID gap** | **8217876** | **0.925671** | **25** | **0.925671** | **Keep as the candidate** |
+| Payload delta | 8217877 | 0.148489 | 24 | 0.133621 | Retire feature branch |
+| Payload XOR | 8217878 | 0.785281 | 25 | 0.785281 | Retire feature branch |
+| Graph-age bias | 8217879 | 0.089398 | 16 | 0.025462 | Retire feature branch |
+
+The positive weight was the training-only negative/positive ratio, 46.6607622.
+Weighting and classification-only training were tested on the baseline, **not**
+on the winning per-ID model. Their results do not establish that every balanced
+objective or payload-loss change would fail on the winner. Context features were
+individual interventions; no winning-feature combination was evaluated. Retired
+means removed from the maintained path, not scientifically disproven.
+
+The earlier October 16 fit, job 7894453, reached best AP 0.1436 at epoch 20 and
+final AP 0.0737. It used a 16,384-event optimizer window and 13,150 total steps.
+It is useful historical context, but is not the matched comparator above.
+
+### Winning checkpoint: strengths and remaining failures
+
+| Metric at epoch 25 | Value |
+| --- | ---: |
+| Classification AP / ROC-AUC | 0.925671 / 0.994256 |
+| Precision / recall / F1 at diagnostic threshold 0.5 | 0.898060 / 0.893186 / 0.895616 |
+| TP / FP / FN | 32,587 / 3,699 / 3,897 |
+| False-positive frame rate at 0.5 | 0.000290745 |
+| Payload anomaly AP / ROC-AUC | 0.734425 / 0.995319 |
+| Positive-capture macro AP, nine attack recordings | 0.504552 |
+
+The macro AP is the unweighted mean of nine recording APs, excluding the two
+zero-positive normal recordings. It is **not** pooled non-DoS AP or a macro score
+across seven attack families. DoS accounts for 31,878 / 36,484 validation positives
+(87.38%), so aggregate AP can hide weak small groups.
+
+| Validation recording | Positives | Classification AP | Recall at 0.5 | False-positive frames |
+| --- | ---: | ---: | ---: | ---: |
+| Impala DoS-2 | 25,954 | 0.979127 | 89.20% | 2,158 |
+| Silverado DoS-4 | 5,924 | 0.980346 | 99.98% | 403 |
+| Impala force-neutral-2 | 492 | 0.778327 | 99.80% | 243 |
+| Impala rpm-2 | 374 | 0.309721 | 48.13% | 238 |
+| Impala standstill-1 | 2,215 | 0.855627 | 99.95% | 516 |
+| Silverado force-neutral-4 | 56 | 0.035643 | 0% | 4 |
+| Silverado double-4 | 356 | 0.006380 | 0% | 1 |
+| Silverado triple-4 | 941 | 0.593182 | 66.63% | 101 |
+| Silverado fuzzing-4 | 172 | 0.002617 | 1.16% | 32 |
+| Impala attack-free-1 | 0 | Undefined | Undefined | 0 |
+| Silverado attack-free-4 | 0 | Undefined | Undefined | 3 |
+
+All recording metrics use the **same aggregate-AP-selected epoch**, rather than
+choosing a separate favorable epoch per recording. AP is undefined on all-normal
+captures. False-positive frames are not merged alerts/hour; normal exposure and
+an alert rule have not been calibrated.
+
+What the evidence supports:
+
+- Same-ID timing is the strongest tested individual addition on this cohort.
+- The payload head is now informative in aggregate. The old baseline's
+  below-chance payload AUC no longer describes the selected model.
+- Weak Silverado families and RPM need focused work; timing-only success is not
+  enough to establish payload-semantic or stealth-attack detection.
+- Training is not demonstrably converged: winner AP at epochs 23/24/25 was
+  0.9041 / 0.7261 / 0.9257. More epochs are a hypothesis, not an established fix.
+- One seed and very few independent captures do not establish stable transfer.
+
+### Correctness, infrastructure and checkpoint audit
+
+| Check | Result and scope |
 | --- | --- |
-| Weighted one/four-stream CUDA gate | 8217866 |
-| Combined-context CUDA gate | 8217867 |
-| One stream, ordinary BCE, joint objective / shared context baseline | 8217868 |
-| One stream, weighted BCE | 8217869 |
-| Four streams, ordinary BCE | 8217870 |
-| Four streams, weighted BCE | 8217871 |
-| One stream, ordinary BCE, classification only | 8217872 |
-| Complete-control report | 8217873 |
-| No elapsed time | 8217874 |
-| Normalized bus gap | 8217875 |
-| Per-ID gap | 8217876 |
-| Payload delta | 8217877 |
-| Payload XOR | 8217878 |
-| Graph age | 8217879 |
-| Complete-context report | 8217880 |
-
-At submission all jobs were pending. `suite.json`, scheduler accounting and the
-phase reports record subsequent execution; submission is not a completed quality
-comparison. Context fits require the complete-control report and their own gate
-to succeed. The historical interrupted suite is retained unchanged.
-
-**Checkpoint audit during experiment-package refactoring:** a synthetic Ray fit
-showed that the installed Lightning callback could leave `last.ckpt` at epoch 0
-after a tied validation score in epoch 1. Checkpoint testing reproduced epoch 0
-exactly, rather than the final epoch. `Sha256ModelCheckpoint` now independently
-refreshes the last checkpoint on eligible epoch saves, retaining best-score
-selection and SHA256 sidecars. Regression checks cover both train-epoch and
-validation-end saving. The already-submitted quality suite uses its original
-frozen callback; verify checkpoint epoch/global-step before treating its
-`last.ckpt` as a final-state checkpoint or using it for resume. Its best-AP
-selection and frame prediction artifacts are unaffected by this callback fix.
-
-### Family balance and ordering
-
-Implement optional recording/family weights in `EventTrainingWindow` metadata and
-`EventGraphMamba.training_step`. Assign families from reviewed training metadata,
-not a filename heuristic in model execution. Derive weights on training data only.
-Use a declared recording-mean or family-mean loss, with denominators covering the
-entire optimizer window; retain the existing normal-byte objective denominator.
-Cap extreme weights and include an unweighted control. A global positive weight
-does not change the relative balance among positive attack families.
-
-For shuffled recording assignment, generate a deterministic permutation from
-`(seed, epoch)` before scheduling streams. Keep rows chronological, process every
-recording exactly once, and preserve exact tail coverage. Update persistent-worker
-scheduling, checkpoint data identity and resume behavior together; changing a
-parent dataset field alone does not update already-running worker copies.
-
-**Checks:** exact row coverage, independent stream states, true objective totals,
-reproducible schedules, and resumed-versus-uninterrupted optimizer/RNG equivalence.
-
-## 4. First representation experiment: explicit local context
-
-- [x] Implement the elapsed-recording-time ablation while preserving artifact timestamps.
-- [x] Implement normalized bus timing alongside the existing raw timing input.
-- [x] Add optional per-ID gaps and previous-payload differences.
-- [x] Add explicit age to each graph memory entry.
-- [ ] Evaluate individual changes before combining them.
-
-### October 27 implementation
-
-The features are opt-in through `EventGraphMambaConfig`: `use_elapsed_time`,
-`timing_mode`, `use_id_gap`, `payload_context` (`none`, `delta`, `xor`, `both`),
-and `graph_age`. Changed feature/state semantics require model schema 2; defaults
-retain schema-1 behavior and checkpoint loading. Per-ID observation features
-additionally require `can_event` representation schema 2, which prepares raw
-predecessor metadata without changing the lossless on-disk cache schema.
-
-Timing normalization fits only reviewed, verified-normal `train_query` recordings.
-It uses at most 65,536 deterministic evenly spaced pairs per recording: median
-positive gap as the `log1p` scale, log-space median/IQR, and a training-only 99.9th
-percentile clip (at least the scale). Near-zero IQR falls back to unit spread.
-Per-ID distributions require `timing_min_support` sampled pairs (default 32);
-unsupported IDs use a pooled same-ID-gap distribution and an explicit support
-indicator. First-seen rows have zero gap features and a separate first-seen mask.
-Fitted tables are checkpoint buffers; evaluation never refits them. The numeric
-ID tables pool reviewed source vehicles and do not assert semantic alignment.
-
-Delta/XOR inputs compare only bytes present in both observations. They feed the
-current observation encoder; the same-frame payload forecast consumes preceding
-encoder states and current header/timing only. Graph attention subtracts
-`softplus(age_decay) * log1p(age_seconds / graph_age_scale)` from valid preceding
-node logits; physical timestamp subtraction remains FP64. All nodes and existing
-capacity guards are retained.
-
-`scripts/event_context_ablation.py OUTPUT --seed 42` generates seven configs:
-baseline, no elapsed time, normalized bus gap, per-ID gap, payload delta,
-payload XOR, and graph age. Its default base now matches the ordinary-BCE,
-one-stream 25-epoch control above. Pass `--base CONTROL.yml` to preserve a reviewed
-control's data, training budget and objective settings. It does not submit jobs.
-Repeat with seeds 43 and 44 in
-separate directories. Correctness/smoke validation is separate from the pending
-full held-out quality comparisons; no detection gain is claimed.
-
-Validation on October 27 passed 120 full-suite tests on A100 and 98 CPU-selected
-tests with CUDA hidden. The focused checks cover physical predecessor oracles,
-tied clocks, variable byte validity, unseen-ID fallback, training-only fitting,
-future/current-payload causality, independent CPU/CUDA output/state/gradient
-parity, corrupted/incompatible checkpoints, and exact optimizer/RNG resume.
-A combined-feature public Ray/Lightning GPU fit passed. A schema-1 checkpoint
-created by the pre-refactor source produced identical outputs through the current
-default model when checked on the same hardware. A bounded synthetic gate passed
-one/two-stream parity and exact coverage of 32 rows per arm with identical initial
-weights; its timings are not production-throughput evidence. Receipts are under
-`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-context-validation-nwg6n_ik/`.
-Ruff, documentation symbol checks, strict MkDocs, wheel building, and lock checks
-also passed.
-
-**Hypothesis:** the current global encoder spends capacity reconstructing local
-timing and value relationships; elapsed time may also provide an attack-schedule
-shortcut. Neither explanation is established by the current metrics.
-
-Implementation locations:
-
-- `graphids/data/events.py`: construct causal metadata and valid masks.
-- `graphids/models/event_graph_mamba.py`: encode optional context and graph age.
-- `graphids/data/config.py` / `graphids/models/config.py`: expose typed options.
-- `graphids/data/representation.py`: version changed input semantics.
-
-For event `t` with ID `i`, find the latest preceding observation of `i`, even across
-a chunk boundary. Candidate auxiliary inputs are `t - last_time[i]`, byte-wise
-payload differences and XOR bits, previous-byte validity, and a first-seen mask.
-Compare bytes only where both observations contain a valid byte; missing/padded
-bytes must not become observed zeros. Update the previous-observation state only
-after constructing the current event's context.
-
-Apply `log1p(gap / scale)` and robust scaling fitted on eligible training data.
-Select/freeze clipping thresholds without looking at validation or target scores.
-Use a global fallback and a support indicator for unseen IDs; do not fit an ID
-normalizer from evaluation traffic in a source-only experiment. Keep FP64 physical
-timestamps for subtraction and row-order checks before converting model features.
-
-For graph node `j`, retain its last-update timestamp. Add a learned age embedding
-or nonnegative learned decay bias to attention over preceding states. At event
-`t`, age is `t - last_time[j]`; equal timestamps still follow physical row order.
-Keep all valid nodes represented and retain the existing capacity checks.
-
-Preserve the forecasting rule: the current payload cannot enter any path used to
-predict that same payload. Current-payload differences are permissible for the
-classifier only; forecasting can use prior differences and the current header.
-
-**Checks:** chunked/full-stream feature equality, tied timestamps, first-seen IDs,
-changing payload lengths, interleaved recordings, future-perturbation causality,
-and no current-payload leakage into forecasts. Version checkpoint identity when
-input dimensions or state semantics change.
-
-**Decision:** promote a feature only if it improves held-out per-family recall at
-the same false-alert budget across seeds. Record latency and memory changes too.
-
-## 5. Establish simple causal baselines
-
-- [ ] Fit a per-ID timing detector on verified-normal training recordings.
-- [ ] Fit a per-ID/byte-position categorical transition detector.
-- [ ] Compare optional shallow classifiers on the same causal observations.
-- [ ] Keep all baseline outputs compatible with the frame artifact contract.
-
-For timing, estimate an empirical gap distribution per supported ID, with a
-declared minimum support and pooled fallback. Score unusually short/long gaps
-against that training distribution. Keep unknown-ID detection as a distinct
-signal rather than equating every unfamiliar ID with a confirmed attack.
-
-For payloads, estimate smoothed distributions such as
-`P(byte_t | ID, byte_position, previous_byte)` on verified-normal training rows.
-Compare transition-conditioned and marginal distributions, and use backoff when
-transition support is sparse. Do not treat zero origin labels inside attack
-recordings as verified-normal training evidence.
-
-Never pool identical numeric IDs across vehicles as though they necessarily have
-the same meaning. Evaluate vehicle-scoped tables where vehicle identity is
-explicitly available, and a separate source-only transferable baseline with a
-declared unknown-ID fallback. A target-normal adaptation arm is a different
-protocol with its own data allowance and untouched target test captures.
-
-Persist counts, smoothing/backoff settings, fitted normalizers, manifest hashes
-and prediction coverage. Evaluate every eligible row, including unsupported rows
-with explicit support flags. Do not improve reported metrics by silently excluding
-hard or unseen IDs.
-
-**Decision:** require the neural model to demonstrate incremental value over these
-baselines under the same splits and calibration, not just a higher training score.
-
-## 6. Repair and diagnose the normal-payload objective
-
-- [ ] Plot normal/attack payload scores by vehicle, ID and byte position.
-- [ ] Compare normal-only pretraining with training both objectives jointly.
-- [ ] Compare frozen, partially unfrozen and jointly optimized encoders.
-- [ ] Compare mean-byte surprise against calibrated top-k/maximum surprise.
-- [ ] Test a joint-byte or signal-aware head only after the simpler controls.
-
-First inspect whether counters, high-entropy normal bytes, operating-mode changes,
-or weak normal-state coverage dominate the score. Below-chance ROC-AUC does not
-by itself justify reversing the score: such a reversal must be selected on
-development data and evaluated independently.
-
-Create a separate pretraining configuration using only reviewed, verified-normal
-training captures. Additional normal reference captures may be included only with
-an explicit training-role/provenance revision; validation/reference and target
-captures do not become training data implicitly. Predict each payload from causal
-preceding context and the current header, using valid-byte target counts.
-
-Save a pretrained checkpoint with its training-manifest digest, stage and objective
-identity. Add a deliberate pretrained-weight initialization path for supervised
-fine-tuning: validate architecture, load encoder weights, and initialize a fresh
-optimizer. Do not disguise a changed training manifest or objective as an ordinary
-resume. Normal epoch-boundary resume should remain strict.
-
-For the fine-tuning experiment, hold training data, supervised budget and evaluation
-protocol fixed. Compare random initialization, pretrained/frozen encoder,
-pretrained/trainable encoder, and existing joint training. Log per-objective
-gradient norms on the shared input projection and temporal layers; scalar loss
-magnitudes alone do not establish gradient interference.
-
-The existing eight categorical byte distributions share preceding context but
-do not condition on other current bytes. A later autoregressive byte head can
-score `P(byte_b | prior_context, header, byte_0...byte_(b-1))`; its masks must
-prevent access to the byte being predicted or later bytes. Preserve all raw bytes
-and test short payloads. Signal-aware variants require reviewed decoding or
-learned boundaries, with no assumed cross-vehicle semantic alignment.
-
-**Checks:** no training gradients from attack/unknown-normality payload targets,
-positive normal-byte target counts, forecast causality, masked-byte correctness,
-and separate pretraining/fine-tuning optimizer identities.
-
-## 7. Main architecture experiment: local recurrent state plus global context
-
-- [ ] Add a shared per-ID recurrent encoder alongside the bus-level Mamba.
-- [ ] Fuse local, global and age-aware graph context for classification.
-- [ ] Forecast payloads from preceding local/global state and the current header.
-- [ ] Compare local-only, global-only and combined models at comparable capacity.
-
-Extend `EventGraphMambaState` with a per-recording bank of local states and
-last-observed timestamps. Use one shared GRU or small state-space cell across IDs
-initially; separate learned weights per numeric ID would complicate unseen-ID
-behavior and could memorize vehicle identity.
-
-For each arriving frame:
-
-1. Read the preceding local state of its ID and preceding global state.
-2. Produce the causal payload forecast from those states and the current header.
-3. Encode the raw current observation and update the local state for that ID.
-4. Update the global sequence encoder and read the preceding graph memories.
-5. Classify using current local/global context and the graph aggregate.
-6. Commit updated states and timestamps for the next frame.
-
-Preserve independent banks across recordings, zero-initialize unseen IDs, detach
-carried state at the existing chunk boundary, and reset at recording boundaries.
-Repeated occurrences of the same ID inside a chunk must advance sequentially;
-updating every occurrence from the same incoming state is incorrect.
-
-Start with a serial correctness implementation and an independent test oracle.
-Optimize later with segmented scans/grouped operations only if state, output and
-gradient parity hold. Include state memory and sparse-ID behavior in the capacity
-budget; do not silently evict history. This state/architecture change requires a
-new checkpoint identity, not relaxed loading of incompatible checkpoints.
-
-**Decision:** compare results at matched training exposure and report model size,
-steps, throughput and latency. A larger combined model needs a parameter-matched
-global-only control before attributing a gain to per-ID structure.
-
-## 8. Calibrate and combine complementary detectors
-
-- [ ] Reserve explicit calibration captures separate from model-selection captures.
-- [ ] Calibrate each head's score against supported normal data.
-- [ ] Compare each head alone, a fixed combination and a small learned combiner.
-- [ ] Select thresholds against an alert-level budget, not frame F1 alone.
-
-Persist per-head normal empirical score distributions, optionally stratified by
-supported ID/vehicle context with a documented fallback. Convert raw scores to
-comparable tail scores, for example `-log(max(1 - F_normal(score), epsilon))`,
-with an explicit tie convention. Quantile normalization does not guarantee a
-future false-positive rate under distribution shift.
-
-Compare the classifier, timing and payload detectors individually before trying
-a fixed maximum/weighted combination or a logistic combiner. Fit any combiner on
-training/development predictions separated from its assessment set, using
-recording-grouped out-of-fold predictions when data are scarce. Do not train a
-combiner on the same held-out predictions used to report its final quality.
-
-Define how threshold crossings become alerts: window width, persistence,
-hysteresis, merging and refractory interval. Fit the final threshold against the
-normal exposure using that exact alert rule. Maximum/union fusion changes the
-false-alert rate and requires its own calibration.
-
-Report both false-positive frames and merged false alerts per hour. Include normal
-hours and counts; short exposure cannot certify a low future alert rate. Any
-example budgets such as 1 or 10 alerts/hour are development choices to declare,
-not acceptance requirements already established for this project.
-
-## 9. Missing-message detection is a separate extension
-
-- [ ] Define timer-driven predictions and trusted suppression evaluation data.
-- [ ] Add expected-arrival state and a timer/heartbeat scoring interface.
-- [ ] Test complete silence and individual-ID disappearance separately.
-
-The current model scores arriving frames. Other traffic may expose a stale ID,
-but no score is emitted during complete silence without an independent timer.
-Maintain expected next-arrival distributions from normal training, evaluate
-overdue IDs on timer ticks, and avoid declaring every nonperiodic ID overdue.
-Preserve tick predictions separately from observed-frame artifacts: a timer tick
-is not a fabricated CAN message and has no attacker-frame origin label.
-Measure timer latency independently of GPU chunk throughput.
-
-## 10. Evaluation and experiment acceptance
-
-- [ ] Freeze reviewed capture groups and separate training, selection, calibration
-  and final test roles before fitting.
-- [ ] Keep source-only transfer and target-normal adaptation as distinct protocols.
-- [ ] Run existing coverage, causality and resume checks for every changed state path.
-- [ ] Report per-vehicle/per-family results and worst-group regressions.
-- [ ] Use recording-level variability/uncertainty, not IID frame bootstrap claims.
-- [ ] Archive reproducible configs, source hashes and complete prediction coverage.
-
-Use the same untouched assessment cohort, threshold protocol and native prediction
-unit for every comparison. If current validation has already guided several
-architecture choices, report further gains there as exploratory; use new held-out
-captures for confirmation when available. Large numbers of correlated frames do
-not compensate for very few independent recordings.
-
-For each run save:
-
-| Artifact | Required contents |
-| --- | --- |
-| Run identity | Source revision plus dirty-tree hash/snapshot, config, seed, manifest digest, dependency versions |
-| Coverage | Physical rows and eligible targets by recording, support flags, unknown-label counts |
-| Learning curve | Epoch losses, target counts, per-family AP, checkpoint selection rule |
-| Detection metrics | AP/AUC, TP/FP/FN/TN, precision/recall/F1 at frozen thresholds, per-group results |
-| Alert metrics | Aggregation rule, threshold, false alerts, normal hours, supported incident metrics |
-| Runtime | Peak memory, streaming latency, preprocessing/state-update cost and events/second |
-
-Promote a change when held-out recall improves at the same declared false-alert
-budget, results are consistent across seeds, and important families do not suffer
-an unexplained regression. Report the actual tradeoff rather than inventing a
-universal minimum improvement percentage. Check parameter/runtime controls when
-the change adds capacity. Freeze final test access until development choices are
-fixed.
-
-## 11. Recommended execution order
-
-1. Finish CUDA verification and the four existing weighting/interleaving controls.
-2. Establish timing/byte baselines; ablate elapsed time and test explicit local context.
-3. Diagnose/pretrain the payload branch and assess per-ID normal score calibration.
-4. Implement shared per-ID recurrence with global-only and capacity-matched controls.
-5. Calibrate/fuse complementary heads on separate development data.
-6. Confirm on held-out recordings, then evaluate separately approved transfer tasks.
-7. Add timer-driven suppression detection when its target and ground truth are ready.
-
-Change one mechanism at a time before combining winners. Increasing width, depth
-or epochs is a later capacity experiment, not the first response to the current
-failure pattern.
-
-## 12. Research basis and limitations
-
-- [CANet: An Unsupervised Intrusion Detection System for High Dimensional CAN Bus Data](https://arxiv.org/html/1906.02492v1)
-  motivates per-ID recurrent state and combined context. Its decoded-signal setup
-  differs from this raw-message model; it does not establish a gain here.
-- [CANShield: Signal-based Intrusion Detection for Controller Area Networks](https://arxiv.org/html/2205.01306v3)
-  motivates signal relationships, multiple time scales and component-specific
-  thresholds. Its signal-selection/decoding assumptions require separate review.
-- [Time-Based CAN Intrusion Detection Benchmark](https://arxiv.org/abs/2101.05781)
-  supports including lightweight timing controls for injection attacks. It does
-  not establish that timing alone detects payload-preserving masquerade.
-- [A comprehensive guide to CAN IDS data and introduction of the ROAD dataset](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0296879)
-  explains attack/label distinctions and dataset limitations, including the need
-  to assess realistic normal exposure and stealthier attacks.
-- [can-train-and-test: A Curated CAN Dataset for Automotive Intrusion Detection](https://arxiv.org/html/2308.04972v1)
-  distinguishes known/unknown vehicles and attacks. Its benchmark scores use a
-  different evaluation setup and are not directly comparable with this run.
-- [MIDS: Detecting Stealthy Masquerade and Tampering Attacks on CAN Bus via Bidirectional Mamba](https://arxiv.org/html/2606.18599v1)
-  is a June 2026 preprint with bidirectional window processing and synthesized
-  attacks. Its results do not demonstrate immediate causal frame attribution or
-  zero-shot cross-vehicle transfer under this project's protocol. Account for
-  window accumulation/lookahead if reproducing it.
-- [Earlier local gear/RPM diagnosis](docs/empirical-notes/2026-10-16-missed-attack-diagnostics.md)
-  demonstrates attribution/context differences and heterogeneous transfer on the
-  earlier snapshot architecture. Do not present those probe gains as measurements
-  from the current event model.
-
-The architectural explanations above are testable hypotheses. The October 16 run
-shows weak detection and unstable recording-level performance; it does not isolate
-a single cause or guarantee that any proposed change will improve results.
+| Original control CUDA gate, 8217866 | Passed; 126 tests, weighted one/four-stream checks and public launcher smoke |
+| Original context CUDA gate, 8217867 | Passed; 126 tests, combined-context checks and public launcher smoke |
+| Training/report jobs | All eleven fits have 25 epochs and matched coverage; reports 8217873/8217880 complete |
+| October 30 experiment-package fix | 125 CPU tests on Pitzer; fit 56868128 and separate checkpoint test 56868130 completed |
+| Final-checkpoint regression | Synthetic two-epoch fit/test predictions bitwise equal; `last.ckpt` epoch 1, step 4, despite tied best AP |
+| October 31 cleanup | 123 CPU tests pass; 24 compute/CUDA cases deselected; historical schema-1/schema-2 Lightning loading covered |
+| Static/package checks after cleanup | Ruff, diff checks, documentation symbols, strict MkDocs and wheel build pass |
+| Frozen historical suite | Source/config/dependency hashes verify; current report tooling still reads all arms |
+| Cleanup CUDA gate, 8238137 | **Passed**, exit 0 in 3 minutes: 147 tests, bitwise checkpoint parity, bounded source benchmark and public launcher smoke |
+| Recording-report follow-ups | 125 CPU tests pass (24 compute/CUDA cases deselected), including 10 focused report/suite tests; saved historical reports regenerate; lint and strict docs pass |
+
+The historical suite used the older frozen callback. Seven `last.ckpt` files are
+stale (baseline, both weighted controls, four-stream unweighted, classification
+only, delta and graph age). All eleven best-AP checkpoints and their SHA sidecars
+verified. The selected file is `checkpoints/epoch=24-step=3300.ckpt`, genuinely
+containing the final epoch. Use verified epoch/global-step and explicit best files
+when loading historical runs; filename `last` alone is insufficient evidence.
+
+Evidence to preserve under the suite root: `suite.json`, `controls-results.json`,
+`context-results.json`, `training-cohort.json`, `training-manifest.json`,
+`source-sha256.json`, `artifact-sha256.json`, `dependency-versions.json`,
+`working-tree.diff`, gate receipts and complete per-epoch prediction indices.
+Do not edit the completed source snapshot to match current code.
+
+Infrastructure receipts:
+
+- `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/exp-refactor-validation-fixed-20261030T192540Z/validation.json`
+  records the successful Pitzer fit/test/checkpoint audit. The preceding failed
+  smoke is retained separately as evidence of the original callback defect.
+- `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/id-gap-focus-validation-20261031T190830Z/`
+  contains the cleanup snapshot and completed job 8238137. `checkpoint-parity.json`
+  verifies bitwise equality for the actual baseline and winner checkpoints against
+  frozen execution on A100: fields, headers, both output heads, graph/bus state,
+  temporal caches and winner timing buffers. This used six synthetic frames per
+  checkpoint across two chunks, not the full validation cohort.
+  `gate/correctness.log` records 147 passing tests; `gate/gate.json` is passed,
+  and the public smoke manifest is finished. The bounded source benchmark scored
+  320 rows; it is correctness evidence, not a production-throughput or quality fit.
+
+## 3. Research findings and what they imply here
+
+These are primary papers or author/publisher material reviewed on October 31.
+External benchmark numbers are not comparisons against this project. The proposed
+adaptations are engineering hypotheses, with the protocol differences stated.
+
+| Research | Relevant result or mechanism | Application and limit |
+| --- | --- | --- |
+| [CANet, 2019](https://arxiv.org/html/1906.02492v1) | Separate per-ID recurrent subnetworks combine into a joint traffic state. | Supports learning local histories; its decoded signals, ID-specific weights and reconstruction objective differ from our raw-byte shared-cell proposal. |
+| [Temporal Graph Networks, 2020](https://arxiv.org/abs/2006.10637) and [author's architecture description](https://emanuelerossi.co.uk/tgn/) | Event-driven node memory combines with graph operators. | Supports a causal local-memory experiment; generic dynamic-graph results do not establish CAN detection gains. |
+| [Decoupling Representation and Classifier, ICLR 2020](https://arxiv.org/abs/1910.09217) | Classifier rebalancing can help long-tailed visual recognition with a frozen representation. | Motivates a cheap frozen-encoder diagnostic before new recurrent architecture; binary CAN attribution and correlated frames differ from multiclass images. |
+| [Class-Balanced Loss, CVPR 2019](https://arxiv.org/abs/1901.05555) | Weights use effective sample counts rather than raw inverse counts. | Motivates capped training-group weighting; millions of correlated CAN frames are not independent samples. A single attack/nonattack weight cannot rebalance attack families. |
+| [Group DRO, ICLR 2020](https://arxiv.org/abs/1911.08731) | Worst-group optimization needs regularization to generalize in overparameterized models. | Consider only after reviewed groups and simple balance; tiny rare groups and label noise can dominate an unregularized worst-group objective. |
+| [Gradient Surgery / PCGrad, NeurIPS 2020](https://papers.nips.cc/paper/2020/hash/3fe78a8acf5fda99de95303940a2420c-Abstract.html) | Addresses conflicting shared-parameter task gradients. | Measure classifier/payload gradient norms and cosine first; different scalar loss magnitudes do not establish interference. |
+| [On Calibration of Modern Neural Networks, ICML 2017](https://proceedings.mlr.press/v70/guo17a.html) | Temperature scaling is a simple calibration method. | Calibration is a separate task from learning ranking; it requires separate calibration data here. |
+| [ROAD dataset guide, 2024](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0296879) and [online masquerade benchmark, journal version 2026](https://arxiv.org/abs/2406.13778) | Advanced attacks can preserve nominal timing; attack types, labels and streaming protocols matter. | Keep timing as a strong cue, then test payload/context behavior. Do not relabel existing weak captures as masquerade or infer trusted incident intervals. |
+| [MIDS, June 2026 preprint](https://arxiv.org/html/2606.18599v1) | Dual ID/payload streams and bidirectional Mamba target synthesized timing-preserving attacks. | Explore causal payload/context learning; its 100-frame bidirectional windows and evaluation protocol are not immediate per-frame causal inference or zero-shot transfer. |
+| [Lightweight temporal and spatial fusion, June 2026](https://www.sciencedirect.com/science/article/pii/S1570870526000909) | Publisher abstract describes per-ID timing plus payload likelihood and precision-oriented AND fusion. | Head complementarity is worth measuring. Requiring a timing alarm would suppress timing-normal payload attacks, so do not adopt AND fusion by default. Abstract reviewed; full text unavailable here. |
+| [MSC-IDS, IEEE IoT Journal early access, October 2026](https://ieeexplore.ieee.org/abstract/document/11719585/) | Publisher abstract describes masked payload-image pretraining with limited labels. | Supports investigating label-efficient payload representation learning; image reconstruction/windows do not establish causal forecasting or held-out-vehicle gains. Abstract reviewed; full text unavailable here. |
+
+## 4. Next implementation work, in priority order
+
+### P0. Verify cleanup, diagnose the saved winner and confirm repeatability
+
+- [x] Finish job 8238137 and inspect checkpoint-parity, test and public-smoke artifacts.
+- [x] Add per-epoch recording macro AP and a weakest-first recording ranking to
+  suite reports. Average only mixed-class recordings with defined finite AP;
+  retain all-normal recordings in the underlying metrics. Best/final summaries
+  use the existing aggregate-AP epoch selection. This is a reporting change,
+  not the full diagnosis below or a model-quality improvement.
+  Nine focused report/suite tests passed. Regenerating all eleven historical
+  summaries from saved indices reproduced winner macro AP 0.504552; the output
+  is `recording-ap-results.json` under the October 30 suite root.
+- [x] Compare classifier and payload AP on the three weakest recordings at the
+  same selected epoch, with each head's eligible known-row count. Mark payload
+  scores as untrained for classification-only arms; different support masks mean
+  the AP values are not necessarily measured on identical rows. This does not
+  implement score fusion or frame-level disagreement analysis.
+  Ten focused report/suite tests passed. `recording-head-results.json` under the
+  October 30 suite root records the context comparison: winner payload AP is
+  0.007263 on fuzzing, 0.026109 on double and 0.007340 on force-neutral, versus
+  classifier AP 0.002617, 0.006380 and 0.035643 respectively. These are diagnostic
+  head comparisons, not measured improvements from fusion or retraining.
+- [ ] Produce a source-only missed-attack report from the saved epoch-25 scores:
+  per-recording/per-reviewed-family AP, pooled non-DoS AP, score distributions,
+  support/first-seen rates and classifier/payload disagreement.
+- [ ] Include unknown labels, missing payload support and all evaluated rows in
+  coverage accounting; unsupported rows must not disappear from denominators.
+- [ ] Audit weak captures' reviewed labels, timestamps and timing support before
+  inferring a model defect. Do not change labels based on the model's mistakes.
+- [ ] Freeze a repeat-run recipe, then evaluate seeds 43 and 44 with the same
+  source exposure/budget after the cleanup gate passes. No new full fits yet.
+
+Use `graphids.evaluation.iter_score_chunks` and the packed indices for diagnosis;
+never read reserved target recordings. Any thresholds swept on the existing
+selection scores are diagnostics. Do not use them to certify final operating
+points. Report variability by independent capture/session and by seed; an IID
+frame bootstrap would exaggerate certainty. Two source vehicles cannot support a
+strong population-wide cross-vehicle claim.
+
+The current validation cohort has already selected architecture and epochs.
+Reserve new independent confirmation captures before reporting a final improvement.
+Add positive-capture macro AP and reviewed-family results to reporting first,
+without silently changing the historical aggregate-AP checkpoint selection rule.
+
+### P1. Establish how much timing and payload scores explain without new architecture
+
+- [ ] Fit a lightweight same-ID-gap detector on verified-normal training data,
+  with declared support and fallback; compare on identical saved-score cohorts.
+- [ ] Fit a smoothed per-ID/byte-position categorical transition baseline with
+  backoff for sparse transitions. Preserve byte-validity and preceding-only access.
+- [ ] Evaluate the existing classifier and payload head separately, including
+  non-DoS and weak groups, before fitting a combination.
+
+These are diagnostic controls, not a restoration of retired neural feature flags.
+A neural architecture should demonstrate incremental value over simple causal
+controls. Keep vehicle-scoped and source-transferable ID assumptions explicit;
+identical numeric IDs across vehicles are not ground-truth semantic matches.
+
+### P2. Reduce recording/family dominance before enlarging the model
+
+Start with a **paired frozen-encoder head experiment**, using only causal training
+representations: natural objective versus capped recording/group-balanced
+objective with the same head initialization, update count and exposure. This
+separates a classifier problem from a representation problem. Do not train or
+select the new head on the validation predictions used to assess it.
+
+If this helps weak groups, test the same one change in end-to-end training.
+Implement weights in `EventTrainingWindow` metadata and `_loss_sums` /
+`training_step`, not by dropping events or breaking chronological streams.
+Freeze capped group weights from training data and normalize their mean over
+known training rows to one. For an optimizer window, use
+`sum(weight_i * BCE_i) / known_target_count`, with the denominator covering the
+whole window and its actual tail. Do **not** divide by the sum of weights inside
+each window: with one stream and mostly single-recording windows, that would
+cancel a constant recording weight and defeat the intervention. Keep a separate
+eligible normal-byte denominator for the payload loss. Verify the objective
+against an independent serial calculation, including single-group windows.
+
+Recording identity is already explicit. Attack-family labels need a reviewed
+training metadata contract; `Recording` currently has no family field. Do not
+infer families from filenames inside model execution. Version manifest/cache
+identity deliberately if metadata changes. Count independent captures as well as
+frames, cap rare-group weights, and keep normal exposure represented. Group DRO
+and focal/effective-count loss are follow-ups only if simple balance warrants them.
+
+A shuffled recording schedule is another separate hypothesis. If tested, permute
+recording assignment deterministically from `(seed, epoch)`, preserving every
+recording's chronology, independent state and exact tail coverage. Persistent
+workers must receive the actual epoch schedule; update checkpoint data identity
+and verify resumed versus uninterrupted optimizer/RNG equivalence.
+
+### P3. Learn local per-ID payload history alongside the retained global model
+
+This is the next architecture experiment if diagnostics show missing temporal
+payload/context information. The current graph stores preceding **global-encoder
+states** at each ID; it is not a recurrent encoder over that ID's own sequence.
+The gap result motivates testing local history but does not prove recurrence will
+help or that the gain is more than a timing shortcut.
+
+Extend `EventGraphMambaState` with a per-recording bank updated by one shared small
+GRU or state-space cell. Retain raw observations and the selected timing input.
+Use shared parameters across IDs, zero initialization and a declared unseen-ID
+behavior; avoid a fixed learned vocabulary that assumes cross-vehicle ID semantics.
+
+For each event:
+
+1. Read preceding local and global states.
+2. Forecast the current payload from those states and the current header.
+3. Encode the current raw observation and update only its ID's local state.
+4. Update global context and classify using current local/global representations
+   and the existing causal graph aggregate.
+5. Commit state for subsequent events.
+
+Repeated same-ID occurrences inside a chunk must update sequentially. Forecasts
+must not see the byte they predict. Keep recording resets, FP64 time checks,
+chunk-boundary detachment, explicit memory limits and no silent history eviction.
+Use a new checkpoint/state identity and explicit weight initialization; never
+relax strict resume checks to accept a changed architecture.
+
+Begin with an independent serial output/state/gradient oracle. Compare this one
+mechanism against the retained candidate at matched exposure, seeds and optimizer
+budget. Add a parameter-matched candidate control if capacity grows materially.
+Measure preprocessing, state memory and latency before optimizing segmented scans.
+Do not reintroduce the retired graph-age bias as part of this change.
+
+### P4. Improve payload learning only where diagnostics justify it
+
+The selected payload head already has aggregate AP 0.7344 / AUC 0.9953; do not
+assume it is broken because the old baseline was poor. Inspect byte/ID/vehicle
+normal-score distributions, counters, high-entropy bytes and weak-family overlap.
+The classification-only baseline control did not isolate payload utility on the
+selected model.
+
+Log separate classifier/payload gradient norms and cosine on shared parameters
+at representative training windows. If sustained conflict appears, test one
+loss-schedule or gradient-balancing intervention; PCGrad is a conditional candidate,
+not an automatic addition. If normal coverage limits representation learning,
+compare normal-only causal pretraining followed by supervised fine-tuning with
+an equal-exposure joint-training control. Only two training captures are currently
+verified normal, so collecting more independently reviewed normal driving modes
+may matter more than adding layers.
+
+Pretraining may use only explicitly approved training roles. Save its stage,
+objective and manifest identity; fine-tuning loads compatible encoder weights into
+a fresh optimizer. It is not ordinary resume with a changed training population.
+Additional normal reference captures need a reviewed protocol/manifest revision.
+A later autoregressive byte head may model same-payload dependencies, but must
+mask the target and later bytes. Offline masked reconstruction and causal
+forecasting are different tasks and must be evaluated as such.
+
+For optimization stability, inspect full loss/gradient curves before extending
+training. A conservative learning-rate decay pilot is separate from family balance
+or architecture changes and needs equal-step controls. The epoch-24 AP dip does
+not by itself identify learning rate, overfitting or a numerical defect as its cause.
+
+### P5. Calibrate operating points and test complementary heads independently
+
+Reserve source calibration and independent assessment captures, grouped by
+recording/session and content identity. The current role enum has source
+`train_*` / `val_*` and target roles, but no explicit source calibration/final-test
+roles. Add a reviewed evaluation-role contract and evaluator without expanding the
+fit loader's training population. `target_calibration` is not a substitute for a
+source development split. Do not repurpose already-used validation as untouched test.
+
+Temperature scaling can improve probability calibration, but a positive global
+rescaling is monotone: it preserves ranking/AP and the 0.5 decision boundary.
+It cannot repair poor weak-family ranking. Choose thresholds on calibration data
+under the declared operating requirement, then freeze them for assessment.
+
+Compare classifier and payload scores alone before any fixed or learned fusion.
+Fit a combiner only on separate development or recording-grouped out-of-fold
+predictions, with source-only normal-score fallback for unsupported IDs. A union
+changes the false-alert rate; an AND rule may veto payload-only attacks. Either
+requires fresh calibration using the actual fused scores and alert logic.
+
+Declare alert windows, persistence/merging and refractory intervals. Report
+false-positive frames, merged false alerts/hour and the measured normal hours.
+No alert budget has yet been chosen; example rates are not existing acceptance
+criteria. Quantile normalization does not guarantee future error rates under shift.
+Trusted incident intervals are required for incident recall and detection delay;
+frame-origin labels do not automatically supply them. No point adjustment that
+credits an entire attack interval after one detected frame.
+
+## 5. Acceptance and the next small experiment batch
+
+Before another full fit:
+
+- [x] Complete cleanup CUDA verification, including historical checkpoint parity.
+- [ ] Complete the saved-winner diagnostic report.
+- [ ] Freeze selection/calibration/confirmation grouping and the metric rule.
+- [ ] Reuse the verified winner as the reference; confirm seeds before promoting
+  a new mechanism. Keep each mechanism a separate, reviewable experiment.
+
+For every proposed change, preserve source/config/dependency hashes, manifest
+identity, seed, prediction coverage and support flags. Test changed causality,
+normal-only fitting, loss denominators, stream isolation, tails, fitted-buffer
+loading and exact epoch-boundary resume. Report per-capture/per-family AP,
+weak-group recall at a frozen operating point, aggregate metrics and runtime.
+Only claim improved recall at a common false-alert budget after calibration and
+independent assessment exist. Do not invent a universal improvement percentage.
+
+The next order is: **diagnose and repeat the retained candidate; measure simple
+causal controls; test capped group balance/frozen-head adaptation; then implement
+shared local recurrence if the evidence warrants it.** Calibration design and
+normal-data collection can proceed alongside diagnosis. Keep larger models,
+more epochs, bidirectional windows, synthetic attacks, target adaptation and
+suppression timers deferred until their specific data/protocol requirements are
+met. Do not recreate an eleven-arm standing suite to pursue these ideas.

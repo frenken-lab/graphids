@@ -1,11 +1,11 @@
-"""Prepare, submit and inspect matched controls followed by context ablations.
+"""Prepare, submit and inspect the selected per-ID timing-gap candidate.
 
 python -m scripts.event_quality_suite prepare OUTPUT
 python -m scripts.event_quality_suite submit OUTPUT
 python -m scripts.event_quality_suite status OUTPUT
 
 Preparation freezes runtime source and the reviewed manifest. Submission is
-explicit; context fits require complete controls and both CUDA gates. No target
+explicit; the fit requires a successful CUDA gate. No target
 files are opened, no thresholds are fitted, and no old run is overwritten.
 """
 
@@ -18,6 +18,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,9 +36,7 @@ from graphids.exp.slurm import (
     write_job,
 )
 from graphids.paths import PROJECT_ROOT, env_value
-from scripts.event_ablation import experiments as controls
-from scripts.event_ablation_report import suite_report
-from scripts.event_context_ablation import experiments as contexts
+from scripts.event_suite_report import suite_report
 
 
 def persist(path, value):
@@ -97,7 +96,6 @@ def cohort(base):
         raise ValueError("suite requires verified-normal training recordings")
     return dict(
         recordings=rows,
-        positive_weight=negative / positive,
         training_rows=sum(r["count"] for r in train),
         validation_rows=sum(r["count"] for r in validation),
         training_positives=positive,
@@ -151,13 +149,13 @@ def prepare(root, preset, *, seed=42):
         raise FileExistsError(f"suite already exists: {root}")
     base = ExperimentConfig.from_yaml(preset).model_dump(mode="json")
     if base["stage"] != "fit" or base["config"].get("ckpt_path"):
-        raise ValueError("comparisons require fresh fits, not checkpoint resumes")
+        raise ValueError("candidate runs require fresh fits, not checkpoint resumes")
     population = cohort(base)
-    # 11 distinct fits: the context baseline reuses the ordinary one-stream arm.
-    prediction_bytes = population["validation_rows"] * 6 * 8 * 25 * 11
+    # One fresh fit, with the same 25-epoch budget as the selected ablation.
+    prediction_bytes = population["validation_rows"] * 6 * 8 * 25
     free = shutil.disk_usage(root.parent).free
     if free < prediction_bytes * 1.2 + 2 * 1024**3:
-        raise ValueError("insufficient space for complete 11-arm score artifacts")
+        raise ValueError("insufficient space for complete candidate score artifacts")
     stat = os.statvfs(root.parent)
     if stat.f_favail and stat.f_favail < 5000:
         raise ValueError("insufficient inode headroom for source and run artifacts")
@@ -193,15 +191,25 @@ def prepare(root, preset, *, seed=42):
     raw["records"] = [asdict(rec) for rec in original.records]
     persist(manifest, raw)
     base["config"]["data"]["manifest_path"] = str(manifest)
-    all_controls = list(
-        controls(
-            base, population["positive_weight"], classification_only=True, seed=seed
-        )
+    cfg = deepcopy(base)
+    cfg["experiment_name"] = f"event_id_gap_seed{seed}"
+    cfg["seed"] = seed
+    cfg["config"]["model"].update(
+        schema_version=2,
+        use_id_gap=True,
+        positive_weight=1.0,
+        payload_weight=1.0,
+        max_graph_tokens=8388608,
     )
-    context_arms = list(contexts(all_controls[0], seed=seed))
-    configurations = [(cfg, ["controls"]) for cfg in all_controls]
-    configurations[0][1].append("context")
-    configurations += [(cfg, ["context"]) for cfg in context_arms[1:]]
+    cfg["representation_cfg"]["schema_version"] = 2
+    cfg["config"]["data"].update(
+        representation_cfg=deepcopy(cfg["representation_cfg"]),
+        chunk_events=16384,
+        stream_batch_size=1,
+        effective_batch_events=65536,
+        max_microbatch_events=65536,
+    )
+    cfg["config"]["trainer"].update(max_epochs=25, enable_checkpointing=True)
     jobs = []
     config_hashes = {}
     verify_command = [
@@ -211,116 +219,85 @@ def prepare(root, preset, *, seed=42):
         "verify",
         str(root),
     ]
-    for cfg, phases in configurations:
-        cfg["experiment_name"] = root.name + "_" + cfg["experiment_name"]
-        cfg["git_sha"] = git_sha
-        path = root / "comparison" / f"{cfg['experiment_name']}.yml"
-        path.write_text(yaml.safe_dump(cfg, sort_keys=False))
-        validated = ExperimentConfig.from_yaml(path)
-        job = build_experiment_job(
-            validated,
-            source_root=source,
-            log_dir=root / "slurm",
-            preflight=[verify_command],
-            modules=["cuda/12.8.1"],
-        )
-        for artifact in (path, *write_job(job)):
-            config_hashes[str(artifact.relative_to(root))] = file_hash(artifact)
-        jobs.append(
-            dict(
-                name=cfg["experiment_name"],
-                config=str(path),
-                script=str(job.script_path),
-                phases=phases,
-            )
-        )
-    combined = contexts(all_controls[0], seed=seed)
-    gate_cfg = next(combined)
-    gate_cfg["config"]["model"].update(
-        schema_version=2,
-        use_elapsed_time=False,
-        timing_mode="normalized",
-        use_id_gap=True,
-        payload_context="both",
-        graph_age=True,
+    cfg["experiment_name"] = root.name + "_" + cfg["experiment_name"]
+    cfg["git_sha"] = git_sha
+    path = root / "comparison" / f"{cfg['experiment_name']}.yml"
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    validated = ExperimentConfig.from_yaml(path)
+    job = build_experiment_job(
+        validated,
+        source_root=source,
+        log_dir=root / "slurm",
+        preflight=[verify_command],
+        modules=["cuda/12.8.1"],
     )
-    gate_cfg["representation_cfg"]["schema_version"] = 2
-    gate_cfg["config"]["data"]["representation_cfg"]["schema_version"] = 2
-    gate_path = root / "comparison/context-gate.yml"
-    gate_path.write_text(yaml.safe_dump(gate_cfg, sort_keys=False))
-    config_hashes[str(gate_path.relative_to(root))] = file_hash(gate_path)
+    for artifact in (path, *write_job(job)):
+        config_hashes[str(artifact.relative_to(root))] = file_hash(artifact)
+    jobs.append(
+        dict(
+            name=cfg["experiment_name"],
+            config=str(path),
+            script=str(job.script_path),
+            phases=["candidate"],
+        )
+    )
     python = str(source / ".venv/bin/python")
-    gate_scripts = []
-    for phase, config, extra in (
-        (
-            "controls",
-            jobs[3]["config"],
-            ["--streams", "1", "4", "--events-per-recording", "16384"],
-        ),
-        (
-            "context",
-            str(gate_path),
-            [
-                "--chunks",
-                "8",
-                "--streams",
-                "1",
-                "2",
-                "--events-per-recording",
-                "32",
-                "--effective-events",
-                "32",
-                "--max-microbatch-events",
-                "32",
-            ],
-        ),
-    ):
-        command = shlex.join(
-            [
-                python,
-                "scripts/event_model_gate.py",
-                "--mode",
-                "gpu",
-                "--output",
-                str(root / f"{phase}-gate"),
-                "--config",
-                config,
-                "--repeats",
-                "1",
-                "--no-profiles",
-                *extra,
-            ]
+    gate_command = shlex.join(
+        [
+            python,
+            "scripts/event_model_gate.py",
+            "--mode",
+            "gpu",
+            "--output",
+            str(root / "candidate-gate"),
+            "--config",
+            jobs[0]["config"],
+            "--repeats",
+            "1",
+            "--no-profiles",
+            "--chunks",
+            "8",
+            "--streams",
+            "1",
+            "--events-per-recording",
+            "32",
+            "--effective-events",
+            "32",
+            "--max-microbatch-events",
+            "32",
+        ]
+    )
+    gate_scripts = [
+        dict(
+            phase="candidate",
+            script=job_script(root, "candidate-gate", [gate_command], gpu=True),
         )
-        gate_scripts.append(
-            dict(
-                phase=phase,
-                script=job_script(root, f"{phase}-gate", [command], gpu=True),
-            )
+    ]
+    report_command = shlex.join(
+        [
+            python,
+            "scripts/event_suite_report.py",
+            str(root / "suite.json"),
+            "--phase",
+            "candidate",
+            "--require-complete",
+            "--output",
+            str(root / "candidate-results.json"),
+        ]
+    )
+    reports = [
+        dict(
+            phase="candidate",
+            script=job_script(root, "candidate-report", [report_command]),
         )
-    reports = []
-    for phase in ("controls", "context"):
-        command = shlex.join(
-            [
-                python,
-                "scripts/event_ablation_report.py",
-                str(root / "suite.json"),
-                "--phase",
-                phase,
-                "--require-complete",
-                "--output",
-                str(root / f"{phase}-results.json"),
-            ]
-        )
-        reports.append(
-            dict(phase=phase, script=job_script(root, f"{phase}-report", [command]))
-        )
+    ]
     for entry in [*gate_scripts, *reports]:
         path = Path(entry["script"])
         config_hashes[str(path.relative_to(root))] = file_hash(path)
     config_hashes["training-manifest.json"] = file_hash(manifest)
     persist(root / "artifact-sha256.json", config_hashes)
     suite = dict(
-        schema_version=1,
+        schema_version=2,
         root=str(root),
         prepared_at=datetime.now(UTC).isoformat(),
         git_sha=git_sha,
@@ -332,7 +309,7 @@ def prepare(root, preset, *, seed=42):
         expected_prediction_bytes=prediction_bytes,
         free_bytes_at_preparation=free,
         free_inodes_at_preparation=stat.f_favail,
-        baseline="ordinary BCE, one stream, joint payload objective",
+        candidate="per-ID timing gap, ordinary BCE, one stream, joint payload objective",
         interpretation="Exploratory source validation; no target access or threshold fitting",
     )
     persist(root / "suite.json", suite)
@@ -375,20 +352,9 @@ def submit(root):
         return job_id
 
     try:
-        control_gate = queue(suite["gates"][0])
-        context_gate = queue(suite["gates"][1], f"afterok:{control_gate}")
-        control_ids = []
-        for job in suite["training_jobs"]:
-            if "controls" in job["phases"]:
-                control_ids.append(queue(job, f"afterok:{control_gate}"))
-        control_report = queue(suite["reports"][0], "afterany:" + ":".join(control_ids))
-        context_ids = [control_ids[0]]
-        for job in suite["training_jobs"]:
-            if job["phases"] == ["context"]:
-                context_ids.append(
-                    queue(job, f"afterok:{context_gate}:{control_report}")
-                )
-        queue(suite["reports"][1], "afterany:" + ":".join(context_ids))
+        gate = queue(suite["gates"][0])
+        fit_ids = [queue(job, f"afterok:{gate}") for job in suite["training_jobs"]]
+        queue(suite["reports"][0], "afterany:" + ":".join(fit_ids))
         suite["status"] = "submitted"
     except Exception as exc:
         suite.update(status="submission_incomplete", submission_error=repr(exc))
@@ -427,7 +393,8 @@ def status(root):
             if len(fields := line.split("|")) >= 4
         }
     reports = []
-    for phase in ("controls", "context"):
+    for entry in suite["reports"]:
+        phase = entry["phase"]
         report = suite_report(path, phase=phase)
         persist(root / f"{phase}-results.json", report)
         reports.append(report)

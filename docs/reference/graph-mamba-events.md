@@ -5,55 +5,60 @@ CAN frame enters the temporal encoder in physical recording order. This follows
 the requirement to preserve raw observations and let the model learn its own
 representations. The snapshot implementation is retired to the verified [source archive](snapshot-archive.md).
 
-The new experiment is
-`configs/experiments/graph_mamba_events_source.yml`. It is a separate architecture
-and checkpoint identity; snapshot weights and calibration cannot be loaded into
-it. Adding this path does not establish improved attack detection, and no full
-encoder fit has been run as part of implementing it.
+The active preset is `configs/experiments/graph_mamba_events_source.yml`.
+It selects the per-ID timing-gap model from the October 30 matched ablations:
+source-validation classification AP 0.9257 at epoch 25, compared with 0.0478
+for the one-stream baseline. This is one seed and a source-validation comparison;
+weak attack-family coverage and independent operating-point evaluation remain open.
+Snapshot weights and calibration use a separate architecture and cannot load here.
 
-## Optional local-context experiments
+## Selected per-ID timing gap
 
-The default input and model remain schema 1. Section 4 of
-`MODEL_IMPROVEMENT_PLAN.md` adds independently selectable experiments:
-
-| Model setting | Default | Experiment |
-| --- | --- | --- |
-| `use_elapsed_time` | `true` | Set `false` to omit elapsed recording time from both encoder and forecast header. Artifact timestamps remain intact. |
-| `timing_mode` | `raw` | `normalized` uses training-fitted robust log bus gaps. |
-| `use_id_gap` | `false` | Add normalized same-ID gap, normalizer support, and first-seen indicators to the header. |
-| `payload_context` | `none` | `delta`, `xor`, or `both` add valid preceding-byte comparisons to the observation encoder. |
-| `graph_age` | `false` | Subtract a learned nonnegative log-age bias from preceding-node attention logits. |
-| `graph_age_scale` | `1.0` | Physical-second scale for graph age; used only with `graph_age`. |
-| `timing_min_support` | `32` | Minimum sampled preceding-ID pairs for an ID-specific timing distribution. |
-
-Changed features require model `schema_version: 2`. The `use_id_gap` and
-`payload_context` experiments additionally require representation
-`schema_version: 2` at both the top level and `config.data.representation_cfg`.
-Representation 2 prepares same-ID predecessor indices and raw context across
-chunks without changing the lossless on-disk caches. Its persistent index costs
-eight bytes per event; sorting needs additional temporary CPU memory during setup.
+The model and `can_event` representation default to schema 2.
+Each frame retains raw elapsed time and bus interarrival time, plus three header
+features: normalized preceding same-ID gap, normalizer support, and first-seen
+indicator. The encoder has 51 input fields and the forecast header has 35.
+Representation 2 prepares same-ID predecessor indices across chunks without
+changing the lossless on-disk caches. The index costs eight bytes per event;
+sorting needs additional temporary CPU memory during setup. Preceding payload
+copies and graph-entry timestamps are no longer carried.
 
 Normalizers fit only verified-normal `train_query` captures, using at most 65,536
 deterministic evenly spaced pairs per capture. They apply `log1p(gap / scale)`
 with median positive-gap scale, robust median/IQR centering, and a frozen 99.9th
 percentile clip at least as large as the scale. Near-zero IQR uses unit spread.
 Supported numeric IDs have their own tables; other IDs use the pooled same-ID-gap
-table and a false support indicator. These are pooled source statistics, not
-claims of common ID semantics across vehicles. Fitted tables are checkpoint
-buffers, validated on load and never fitted from evaluation traffic.
+table and a false support indicator. `timing_min_support` defaults to 32 sampled
+pairs. Fitted tables are checkpoint buffers, validated on load and never refitted
+from evaluation traffic. The legacy unused bus-normalizer row remains in the
+buffer to preserve selected-checkpoint identity.
 
-Previous-byte validity requires that both payloads contain the byte. First-seen
-IDs have no preceding bytes, even when padded storage contains zeros. Current
-delta/XOR features affect classification through the current encoder state;
-the same-frame payload forecast uses only preceding states and current header.
-Graph ages subtract FP64 physical timestamps in physical row order, including
-ties, before converting log-age features to model precision.
+The active preset uses one stream, unweighted BCE, a joint payload objective,
+25 epochs, 16,384-event chunks and a 65,536-event optimizer window.
+`python -m scripts.event_quality_suite prepare OUTPUT --seed 42` freezes one
+candidate. `submit OUTPUT` creates three jobs: a CUDA gate, the fit after a
+successful gate, and a report after the fit terminates. `status OUTPUT` refreshes
+accounting and `candidate-results.json`. Separate directories and `--seed` select
+repeat runs. Preparation alone does not submit anything.
 
-Generate matched baseline/individual-feature configs with
-`python scripts/event_context_ablation.py OUTPUT --seed 42`. Seeds 43 and 44
-use separate output directories. The generator does not submit jobs. Quality
-comparisons and feature promotion remain pending; baseline throughput numbers
-below do not measure these opt-in experiments.
+Each epoch summary includes `recording_macro_ap` over mixed-class recordings and
+`recordings_by_ap` ordered weakest first. Undefined single-class AP is excluded
+from that mean; all recording metrics remain available. The CLI shows the three
+weakest recordings at the aggregate-AP-selected epoch. Checkpoint selection still
+uses aggregate AP.
+
+The weakest-recording lines compare classification and payload AP at that same
+epoch, including supported payload rows versus known classification rows. These
+APs may cover different populations. Classification-only runs show `untrained`
+instead of presenting their payload scores as a detector result.
+
+The no-elapsed, normalized-bus, payload delta/XOR and graph-age paths and the
+weighting/interleaving/classification-only generators have been retired. Their
+completed artifacts and frozen source remain in the October 30 suite. The
+selected schema-2 checkpoint and schema-1 baseline checkpoints remain loadable;
+neutral historical feature flags are accepted and removed during configuration
+validation. Active flags for removed variants fail explicitly and require the
+original frozen source. Schema 1 requires `use_id_gap: false`.
 
 ## Input contract
 
@@ -67,12 +72,14 @@ It does not reconstruct unavailable wire fields such as an absent IDE/RTR flag.
 
 The neural input directly encodes the available frame fields:
 eight byte values scaled by 255, eight byte-presence masks, 29 ID bits, length
-scaled by eight, elapsed recording time, and the preceding bus interarrival time.
+scaled by eight, elapsed recording time, the preceding bus interarrival time,
+and the three per-ID timing features described above.
 Elapsed time and interarrival are computed in FP64 and converted to the model's
 usual floating point dtype at projection. Absolute clock origin is retained in
 the cache but is not a learned recording-identity feature. There are no binned
-counts, payload-change summaries, byte-difference heuristics, normal-reference
-traffic profiles, or correlation-selected graph edges. Labels, normality flags,
+counts, payload-change summaries, byte-difference heuristics, or
+correlation-selected graph edges. Normal timing statistics supply only the
+explicit per-ID gap normalization. Labels, normality flags,
 recording names, roles, vehicles, and source interfaces do not enter the encoder.
 Normality and payload provenance only control eligible training targets.
 
@@ -89,8 +96,8 @@ by the distinct reviewed training recordings available. The
 scheduler batches equal-length chunks and groups short tails by their exact
 length, replacing completed recordings with fresh streams. It never inserts
 fake events, replays warmup rows or drops tails. `chunk_events * stream_batch_size`
-must fit both `max_microbatch_events` (default 16384) and
-`effective_batch_events` (default 16384). Raise the explicit microbatch cap
+must fit both `max_microbatch_events` (default 65536) and
+`effective_batch_events` (default 65536). Raise the explicit microbatch cap
 when testing more streams at a fixed chunk length; it can be configured up to
 262144 events for at most 16 streams. Each optimizer
 window declares its complete eligible classification and normal-payload target
