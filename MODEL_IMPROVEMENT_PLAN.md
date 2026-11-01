@@ -1,12 +1,14 @@
 # CAN event model: evidence and implementation plan
 
-Updated: 2026-10-31. Research reviewed through this date.
+Updated: 2026-11-01. Research reviewed through October 31.
 
 The active candidate is **raw CAN frames plus normalized per-ID timing gap**, with
 one stream, ordinary BCE and the joint normal-payload objective. Keep this path
 small. The October 30 comparison is complete; weaker feature branches and their
-generators were retired on October 31. Future improvements below are proposals,
-not implemented features or demonstrated gains. This update does not submit jobs.
+generators were retired on October 31. The paired frozen-classifier pilot and
+source-only failure report below are implemented separately; other future
+improvements remain proposals. A pilot
+implementation is not evidence of a model-quality gain.
 
 ## 1. Current implementation and operating constraints
 
@@ -236,12 +238,61 @@ adaptations are engineering hypotheses, with the protocol differences stated.
 - [ ] Produce a source-only missed-attack report from the saved epoch-25 scores:
   per-recording/per-reviewed-family AP, pooled non-DoS AP, score distributions,
   support/first-seen rates and classifier/payload disagreement.
-- [ ] Include unknown labels, missing payload support and all evaluated rows in
+- [x] Include unknown labels, missing payload support and all evaluated rows in
   coverage accounting; unsupported rows must not disappear from denominators.
 - [ ] Audit weak captures' reviewed labels, timestamps and timing support before
   inferring a model defect. Do not change labels based on the model's mistakes.
 - [ ] Freeze a repeat-run recipe, then evaluate seeds 43 and 44 with the same
   source exposure/budget after the cleanup gate passes. No new full fits yet.
+
+#### November 1 focused failure report
+
+[`scripts/event_failure_report.py`](scripts/event_failure_report.py) completes
+the diagnosis for Silverado double-4, force-neutral-4 and fuzzing-4, using the
+saved pilot predictions and original checkpoint timing buffers. CPU job
+**56924611** passed in **1m20s**, with no GPU or neural training. All 12,758,965
+validation rows across eleven captures match reviewed source-cache timestamps,
+IDs, labels and payload support; all paired arms preserve the payload scores.
+The three captures have zero unknown labels; twelve fuzzing positives lack
+payload support and remain in budgeted-recall denominators. Seven focused tests
+and the **140-test CPU suite** pass. The complete family/non-DoS report and an
+independent ground-truth label audit remain unfinished.
+
+Findings change the immediate priority:
+
+- Fuzzing has no matching training capture. **163/172 attack frames use IDs
+  absent from that vehicle's normal training capture; 159 are first occurrences.**
+  Only twelve have eligible preceding same-ID byte pairs. Per-ID recurrent memory
+  has little history to exploit for most of this capture. All 795,285 negative
+  frames here have training-normal IDs; an ID-novelty control still needs checking
+  on the remaining validation/normal captures before claiming a useful detector.
+- Force-neutral has only 32 matching training positives, but **all 56 validation
+  positives have timing support and valid payloads**. Vehicle-scoped byte novelty
+  occurs on all 56 and disappears under cross-vehicle pooling. This is sensitivity
+  evidence, not proof that pooling causes the model failure.
+- Double has 296 matching training positives. Its validation positives split
+  equally between two IDs; only half have fitted timing support. Payload AP is
+  0.026109 versus classifier AP 0.006380, on identical rows.
+- At a **0.01% empirical normal-frame FPR budget**, original classifier recall
+  is 1.97% / 46.43% / 9.30% on double / force-neutral / fuzzing, with
+  414 / 478 / 3,779 false-positive frames inside the corresponding attack captures.
+  Payload recall is 0% / 14.29% / 3.49%. At 0.1%, payload improves double recall
+  to 44.10% with 2,011 capture false positives, versus classifier 10.39% with
+  4,457. There is no uniform fusion benefit. These thresholds use the same
+  3,248,139 normal selection-validation frames and are not production calibration.
+
+**Next: evaluate a vehicle-scoped training-normal ID-novelty control across all
+source validation captures, then a causal same-ID-gap control on known IDs.**
+Defer the per-ID GRU until these controls and known-ID failure analysis justify
+learned local history. Keep the original candidate and the current preset.
+
+The [dated evidence note](docs/empirical-notes/2026-11-01-151725-EST-weak-capture-failures.md)
+records interpretation, matched-budget tables, source/clock limits and reproduction.
+Machine-readable and generated Markdown reports, source/config/score hashes,
+reviewed clock metadata and `artifact-audit.json` are under
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-failure-report-20261101T201147Z/`.
+All original saved metrics on the focused captures reproduce exactly; the audit
+checks coverage, support partitions, disagreement counts and empirical budgets.
 
 Use `graphids.evaluation.iter_score_chunks` and the packed indices for diagnosis;
 never read reserved target recordings. Any thresholds swept on the existing
@@ -271,13 +322,86 @@ identical numeric IDs across vehicles are not ground-truth semantic matches.
 
 ### P2. Reduce recording/family dominance before enlarging the model
 
-Start with a **paired frozen-encoder head experiment**, using only causal training
+The **paired frozen-encoder head experiment** is implemented in
+[`scripts/event_classifier_pilot.py`](scripts/event_classifier_pilot.py), using only causal training
 representations: natural objective versus capped recording/group-balanced
 objective with the same head initialization, update count and exposure. This
 separates a classifier problem from a representation problem. Do not train or
 select the new head on the validation predictions used to assess it.
 
-If this helps weak groups, test the same one change in end-to-end training.
+Pilot recipe: load the verified epoch-25 per-ID-gap checkpoint, freeze its entire
+state and disable dropout, then initialize two copies of its 129-parameter linear
+classifier. Train for **five head epochs**, AdamW LR 0.001 and weight decay 0.01,
+using the original chronological loader and optimizer windows. Both heads consume
+the same detached representation from each forward pass. Only positive frames
+receive recording weights; negatives retain weight one and unknowns are masked.
+Training-only positive counts determine capped equal-mass weights (maximum 10),
+with the total positive weight preserved. This balances recordings, not reviewed
+attack families, and does not use the historical global positive weight 46.66.
+
+Evaluate the original and both final adapted heads on the full existing validation
+cohort, using one common frozen forward pass and identical payload support/scores.
+Report aggregate and recording AP, recording macro AP and diagnostic confusion
+metrics at 0.5. Select no epoch or threshold on this cohort. Save full predictions,
+training coverage/weights, source/config/dependency provenance and head-only
+artifacts bound to the base checkpoint SHA. These artifacts represent a separate
+adaptation stage, not a resumable full-model checkpoint. The production preset
+and model implementation remain unchanged.
+
+```bash
+# Inside one single-A100 Slurm allocation; OUTPUT must not exist.
+python -m scripts.event_classifier_pilot --config WINNER.yml \
+  --checkpoint WINNER.ckpt --output OUTPUT
+```
+
+Eight synthetic CPU tests cover capped positive mass, training-only weights,
+unknown-label masking, window normalization, paired cap-one identity, causal
+readout parity, frozen parameters/buffers, exact row/tail coverage and hook cleanup.
+The full CPU suite passed **133 tests** (24 compute/CUDA cases deselected).
+Ruff, documentation lint and the strict documentation build passed.
+
+#### November 1 pilot result: retain the original candidate
+
+One A100 job, **8251729**, completed successfully in **2m34s**, including the eight
+focused tests. Each head received 660 updates across five complete exposures of
+8,526,701 training frames. Evaluation covered all 12,758,965 validation frames.
+
+| Final head | Aggregate AP | Recording macro AP | Recall at 0.5 | False-positive frames at 0.5 |
+| --- | ---: | ---: | ---: | ---: |
+| Original epoch-25 classifier | 0.925671 | 0.504552 | 0.893186 | 3,699 |
+| Ordinary BCE adaptation | 0.933404 | 0.489161 | 0.969493 | 3,744 |
+| Capped recording-positive adaptation | 0.927782 | 0.505310 | 0.961956 | 3,741 |
+
+The balanced head barely changes macro AP relative to the original (+0.000757).
+It does not fix the weakest Silverado captures: double AP falls from 0.006380 to
+0.003352 and force-neutral from 0.035643 to 0.018150; both still have zero recall
+at 0.5. Fuzzing AP changes from 0.002617 to 0.002665, with unchanged 1.16% recall.
+The all-normal Silverado capture has five false-positive frames versus three
+originally; Impala remains zero. Ordinary adaptation improves aggregate ranking
+but reduces recording macro AP. **Neither adapted head replaces the original.**
+Do not launch an end-to-end weighted fit on the strength of this result. This
+single fixed-budget/cap pilot does not establish that all head adaptation or
+balancing fails, or prove a representation defect.
+
+The artifact audit exactly reproduced **all original aggregate and per-recording
+metrics**, verified identical payload metrics and validation coverage across
+heads, preserved positive mass at 178,904 with final weights capped at ten,
+confirmed unchanged frozen parameters/buffers and base checkpoint bytes, and
+reloaded both head artifacts successfully. This also extends the cleanup's
+checkpoint evidence to full-cohort metric reproduction, not full-frame bitwise
+prediction equality or another end-to-end training run.
+
+Evidence root:
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-classifier-pilot-20261101T194504Z/`.
+`pilot/pilot.json` contains the complete results, counts, weights and provenance;
+`pilot/scores/{original,ordinary,balanced}/` holds full predictions;
+`pilot/classifier-heads.pt`, `artifact-audit.json`, `submission.json` and
+`pilot-8251729.log` retain the artifacts and verification evidence. Runtime source,
+manifest, config and checkpoint hashes passed before execution. No target files
+were opened and no threshold was fitted.
+
+If a future balanced-head pilot improves weak groups convincingly, test that
+single change in end-to-end training.
 Implement weights in `EventTrainingWindow` metadata and `_loss_sums` /
 `training_step`, not by dropping events or breaking chronological streams.
 Freeze capped group weights from training data and normalize their mean over

@@ -52,6 +52,31 @@ epoch, including supported payload rows versus known classification rows. These
 APs may cover different populations. Classification-only runs show `untrained`
 instead of presenting their payload scores as a detector result.
 
+For the separate classifier diagnostic, run `python -m scripts.event_classifier_pilot
+--config WINNER.yml --checkpoint WINNER.ckpt --output NEW_DIRECTORY` inside one
+A100 allocation. It freezes the checkpoint and timing buffers, disables dropout,
+and trains two identically initialized linear heads for five epochs: ordinary
+BCE and training-recording-balanced attack positives capped at 10. Negatives and
+total positive weight retain their original exposure. Both arms share each
+causal forward pass and the original loader/windows. The final heads and original
+classifier are evaluated on the same complete validation cohort. `pilot.json`
+contains metrics, weights and coverage; `classifier-heads.pt` contains only the
+adapted heads and base checkpoint identity. This is a diagnostic adaptation stage,
+not full-model resume or a change to the selected preset. The repository's
+`MODEL_IMPROVEMENT_PLAN.md` records the pilot protocol and measured results.
+
+`python -m scripts.event_failure_report --pilot PILOT_ROOT --focus FOCUS.json
+--output NEW_DIRECTORY` diagnoses saved pilot predictions in a CPU allocation.
+The focus file maps explicit validation recording keys to lists of matched
+training keys, including empty lists for unmatched captures. The report verifies
+all source-validation rows, fits vehicle-scoped byte/transition support only on
+verified-normal training queries, reconstructs checkpoint-owned timing support,
+and compares heads at empirical normal-validation frame budgets. Unsupported
+payload rows remain in recall denominators. `report.json` and `report.md` record
+exposure, support, score distributions, disagreement, matched-budget decisions
+and physical-row examples. These are source-selection diagnostics; they do not
+refit the encoder, open target files or provide calibrated alerts/hour.
+
 The no-elapsed, normalized-bus, payload delta/XOR and graph-age paths and the
 weighting/interleaving/classification-only generators have been retired. Their
 completed artifacts and frozen source remain in the October 30 suite. The
