@@ -1,14 +1,14 @@
 # CAN event model: evidence and implementation plan
 
-Updated: 2026-11-01. Research reviewed through October 31.
+Updated: 2026-11-02. Research reviewed through October 31.
 
 The active candidate is **raw CAN frames plus normalized per-ID timing gap**, with
 one stream, ordinary BCE and the joint normal-payload objective. Keep this path
 small. The October 30 comparison is complete; weaker feature branches and their
-generators were retired on October 31. The paired frozen-classifier pilot and
-source-only failure report below are implemented separately; other future
-improvements remain proposals. A pilot
-implementation is not evidence of a model-quality gain.
+generators were retired on October 31. The paired frozen-classifier pilot,
+source-only failure report and causal diagnostic controls below are implemented
+separately; other future improvements remain proposals. A pilot implementation
+is not evidence of a model-quality gain.
 
 ## 1. Current implementation and operating constraints
 
@@ -281,10 +281,11 @@ Findings change the immediate priority:
   4,457. There is no uniform fusion benefit. These thresholds use the same
   3,248,139 normal selection-validation frames and are not production calibration.
 
-**Next: evaluate a vehicle-scoped training-normal ID-novelty control across all
-source validation captures, then a causal same-ID-gap control on known IDs.**
-Defer the per-ID GRU until these controls and known-ID failure analysis justify
-learned local history. Keep the original candidate and the current preset.
+The November 2 follow-up below evaluates a vehicle-scoped training-normal
+ID-novelty control across all source validation captures and a causal same-ID-gap
+control on supported known IDs. Continue deferring the per-ID GRU until the
+remaining known-ID failure analysis justifies learned local history. Keep the
+original candidate and the current preset.
 
 The [dated evidence note](docs/empirical-notes/2026-11-01-151725-EST-weak-capture-failures.md)
 records interpretation, matched-budget tables, source/clock limits and reproduction.
@@ -293,6 +294,120 @@ reviewed clock metadata and `artifact-audit.json` are under
 `/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-failure-report-20261101T201147Z/`.
 All original saved metrics on the focused captures reproduce exactly; the audit
 checks coverage, support partitions, disagreement counts and empirical budgets.
+
+#### November 2 causal controls: two distinct, measurable blind spots
+
+[`scripts/event_causal_controls.py`](scripts/event_causal_controls.py) fits
+vehicle-scoped ID sets and robust timing tables only on the two verified-normal
+training queries. CPU job **56946541** completed in **2m01s**, with no GPU or
+neural execution. All **12,758,965 validation rows** align with all three saved
+pilot arms; **112 original classifier/payload metric values reproduce exactly**.
+Six new tests and the **146-test CPU suite** pass; the cluster gate passed all
+13 control/failure-report tests. Per-frame control scores, support/startup masks,
+frozen profiles and provenance are saved separately from the selected model.
+
+- The fixed ID-novelty alarm detects **163/172 fuzzing positives (94.77%)**,
+  including 159 first occurrences. It produces **zero false-positive frames on
+  all 12,722,481 validation negatives**, including both normal captures and
+  recording starts. Other attacks use training-normal IDs and receive no novelty
+  detections. This establishes a source-cohort blind spot, not future normal-ID
+  coverage, a zero-shot detector, or a validated production fusion policy.
+- At the **0.01% empirical normal-frame FPR budget**, gap detects **177/356
+  double positives (49.72%)**, versus original **7/356 (1.97%)**. Capture false
+  positives are 545 versus 414. Gap abstains on 178 positives with insufficient
+  sampled timing support; these remain misses. On identical gap-supported rows,
+  gap AP is **0.627940**, versus original **0.012035**. The whole-capture
+  classifier AP 0.006380 has a different denominator.
+- Force-neutral remains weak: gap detects **4/56**, versus classifier **26/56**,
+  with 530 versus 478 capture false positives at that budget. All 56 positives
+  have local timing support; novelty detects none. More timing alone is not a
+  uniform remedy. RPM also retains complementary payload signal: 361/374
+  payload detections versus classifier 201/374 and gap 139/374, with capture
+  false positives 619/260/189 respectively.
+- Gap AP is 0.781547 on 12,713,206 supported known rows (36,141 positives).
+  Original AP remains 0.925671 on all known rows (36,484 positives). Support
+  differs, so these are not a matched aggregate ranking comparison. The report
+  supplies identical-row comparisons within each capture's gap-support stratum.
+  At 0.01%, gap and neural heads each use 324 normal-validation false positives;
+  the binary novelty score uses none because ties cannot spend a continuous budget.
+
+The payload follow-up below completes the smoothed vehicle-scoped byte-transition
+control with sparse-history backoff. Compare timing scope and clipping on
+identical supported rows before attributing double's gap advantage to new
+recurrent capacity or proposing a normalization change. Local control tables and
+the model's pooled checkpoint tables differ; these experiments do not isolate
+that cause. Complete reviewed-family/non-DoS reporting and independent
+confirmation/calibration grouping before promoting a hybrid or another neural
+architecture.
+
+Evidence root:
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-causal-controls-20261102T173642Z/`.
+`analysis/report.json`, `analysis/report.md` and `analysis/controls-*.npz`
+retain results and all frame scores/masks. The
+[dated note](docs/empirical-notes/2026-11-02-causal-source-controls.md) records
+matched-denominator comparisons, protocol limits and reproduction.
+
+#### November 2 payload controls: history helps ranking, weak captures remain
+
+[`scripts/event_payload_control.py`](scripts/event_payload_control.py) adds
+vehicle/ID/position-scoped marginal and preceding-byte conditional distributions,
+enabled by `scripts.event_causal_controls --payload-transition`. Marginal counts
+have uniform prior mass one; transition counts blend toward the marginal with
+prior mass 32. These values were fixed before evaluation. Both controls require
+normal-training support for every valid current byte position, share the same
+scored rows and report mean byte NLL. Missing preceding positions and unseen
+contexts use the marginal. Query observations advance history but never counts.
+
+CPU job **56946799** completed in **4m33s**, including **152 passing CPU tests**
+(24 compute/CUDA cases deselected), the full validation comparison and the
+artifact audit. It fits 19,765,954 normal training bytes and 19,764,995 preceding
+byte pairs, preserving 858,925 sparse transition states. All 12,758,965 physical
+validation rows align; all earlier classifier/payload/ID/gap metrics and budgets
+reproduce exactly, including the 112 original classifier/payload metric values.
+There is no GPU or neural execution.
+
+| Validation capture | Marginal AP | Transition AP | Original classifier AP | Neural payload AP |
+| --- | ---: | ---: | ---: | ---: |
+| Impala force-neutral-2 | 0.722467 | 0.921582 | 0.778327 | 0.729704 |
+| Impala rpm-2 | 0.072947 | 0.515462 | 0.309721 | 0.455335 |
+| Silverado force-neutral-4 | 0.000345 | 0.003559 | 0.035643 | 0.007340 |
+| Silverado double-4 | 0.006186 | 0.007894 | 0.006380 | 0.026109 |
+
+These four captures have identical support for all four columns. Transition
+history adds useful ranking beyond frequencies on some captures but does not
+repair the weak Silverado pair. On exactly matched full control support,
+aggregate AP increases from 0.019949 to 0.026972 and recording macro AP from
+0.284132 to 0.430540. These controls remain poor aggregate detectors; their
+12,758,798 supported rows exclude 167 fuzzing positives. Do not compare those
+aggregate APs directly with the full-support classifier as if coverage matched.
+
+At the **0.01% allowed empirical normal-frame FPR**, tied scores leave most of
+the 324-frame allowance unused: marginal achieves **zero** normal FP and
+transition **two**, versus 324 for the neural heads. Neither byte control detects
+any force-neutral-4 or double-4 positive at this allowance. At 0.1%, achieved
+normal FP are 3,066 and 3,088 (allowance 3,248), but those captures still have zero
+detections and 2,710/11,425 capture FP. Improved AP does not establish useful
+recall at the current pooled operating points.
+
+The byte controls support only **5/172 fuzzing positives**, versus 9 on known
+IDs and 160 with neural payload support. Transition AP 0.320196 versus marginal
+0.000298 on these five positives is not a whole-fuzzing result. Original and
+neural payload AP on exactly those rows are 0.062864 and 0.091614. The existing
+ID-novelty control remains the relevant diagnosis for most fuzzing positives.
+
+**Next: inspect normal-score tail ties and per-ID score scales, and isolate the
+timing scope/clipping difference on identical rows.** Keep calibration/confirmation
+grouping separate from this reused selection cohort. These simple one-byte
+conditional controls do not establish that a GRU will fix force-neutral or
+double, nor rule out richer multibyte/longer-history learning. Retain the selected
+model and avoid automatic fusion or a larger fit from this result alone.
+
+Evidence root:
+`/fs/ess/PAS1266/graphids/dev/rf15/experimentruns/event-payload-controls-20261102T175023Z/`.
+`analysis/report.json`, `analysis/report.md`, eleven control-score archives,
+two sparse count archives and `artifact-audit.json` retain the complete evidence.
+The [dated note](docs/empirical-notes/2026-11-02-payload-transition-controls.md)
+records formulas, coverage, all capture APs, operating-point limits and reproduction.
 
 Use `graphids.evaluation.iter_score_chunks` and the packed indices for diagnosis;
 never read reserved target recordings. Any thresholds swept on the existing
@@ -308,10 +423,15 @@ without silently changing the historical aggregate-AP checkpoint selection rule.
 
 ### P1. Establish how much timing and payload scores explain without new architecture
 
-- [ ] Fit a lightweight same-ID-gap detector on verified-normal training data,
+- [x] Fit a lightweight same-ID-gap detector on verified-normal training data,
   with declared support and fallback; compare on identical saved-score cohorts.
-- [ ] Fit a smoothed per-ID/byte-position categorical transition baseline with
+  November 2 control uses vehicle-local tables, 32 sampled pairs per ID, frozen
+  training clipping and explicit abstention for first/unsupported occurrences.
+  All frames remain in budget denominators; matched-support neural AP is reported.
+- [x] Fit a smoothed per-ID/byte-position categorical transition baseline with
   backoff for sparse transitions. Preserve byte-validity and preceding-only access.
+  November 2 paired marginal/transition controls share full-byte support, retain
+  unsupported frames in budget denominators and preserve all sparse counts.
 - [ ] Evaluate the existing classifier and payload head separately, including
   non-DoS and weak groups, before fitting a combination.
 
@@ -536,10 +656,12 @@ weak-group recall at a frozen operating point, aggregate metrics and runtime.
 Only claim improved recall at a common false-alert budget after calibration and
 independent assessment exist. Do not invent a universal improvement percentage.
 
-The next order is: **diagnose and repeat the retained candidate; measure simple
-causal controls; test capped group balance/frozen-head adaptation; then implement
-shared local recurrence if the evidence warrants it.** Calibration design and
-normal-data collection can proceed alongside diagnosis. Keep larger models,
+The next order is: **complete known-ID payload/timing controls and saved-score
+diagnosis; establish independent confirmation grouping and repeat the retained
+candidate; then select one neural intervention if the evidence warrants it.**
+The completed frozen-head balance pilot has not earned an end-to-end weighted
+fit. Calibration design and normal-data collection can proceed alongside
+diagnosis. Keep larger models,
 more epochs, bidirectional windows, synthetic attacks, target adaptation and
 suppression timers deferred until their specific data/protocol requirements are
 met. Do not recreate an eleven-arm standing suite to pursue these ideas.

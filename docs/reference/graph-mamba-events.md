@@ -77,6 +77,48 @@ exposure, support, score distributions, disagreement, matched-budget decisions
 and physical-row examples. These are source-selection diagnostics; they do not
 refit the encoder, open target files or provide calibrated alerts/hour.
 
+`python -m scripts.event_causal_controls --pilot PILOT_ROOT --output NEW_DIRECTORY`
+compares two simple controls with the original classifier and payload scores on
+every source-validation capture, inside a CPU allocation. ID novelty flags IDs
+absent from that vehicle's verified-normal training union. The timing control
+uses the absolute normalized same-ID gap, with separate frozen training tables
+per vehicle and the existing log/median/IQR/clip rule. It requires 32 sampled
+training pairs per ID; first occurrences and unsupported IDs abstain. Neither
+control assumes matching numeric IDs have shared semantics across vehicles.
+Unprofiled vehicles abstain. These controls are source diagnostics, separate from
+the model's checkpoint-owned, pooled normalizer.
+
+The report includes the fixed ID-novelty alarm, empirical normal-frame budgets,
+known-ID/startup/common-gap-support strata, supported AP denominators and
+recording macro AP. Unsupported positives remain in budgeted-recall denominators.
+All saved classifier arms are checked for row alignment and unchanged payload
+scores; original classifier/payload metrics must reproduce exactly. `report.json`
+retains frozen profiles and provenance, and `controls-*.npz` preserves every
+control score and support/first-seen mask in physical-row order. Selection-data
+thresholds and vehicle-specific support do not establish calibrated alert rates
+or held-out-vehicle improvements.
+
+Append `--payload-transition` to that command to include paired categorical
+byte-frequency and same-ID byte-transition controls. They count all bytes and
+preceding byte pairs from verified-normal training queries with verified lengths,
+separately for each vehicle, ID and byte position. The marginal distribution has
+one uniform prior observation across 256 byte values; the conditional distribution
+has 32 prior observations distributed according to that marginal. Sparse
+transition contexts blend toward the marginal; missing preceding bytes, first
+occurrences and unseen contexts use it directly. These constants are fixed before
+evaluation. Query traffic never updates counts.
+
+Both controls score mean negative log likelihood across current valid bytes and
+share exactly the same support: every valid current byte position must have a
+normal-training profile. Missing/unverified payloads, untrained positions and
+unprofiled vehicles abstain for the whole frame. The `byte_supported` stratum
+compares both controls and neural heads on identical rows. `byte_backoff` and
+`byte_fully_conditioned` partition supported frames according to whether all
+current byte positions have observed training transition contexts. Even these
+observed contexts retain marginal smoothing. Per-frame byte counts, scores and
+masks are saved with the control predictions; `payload-profile-*.npz` preserves
+the sparse integer training tables, with hashes and fit exposure in the report.
+
 The no-elapsed, normalized-bus, payload delta/XOR and graph-age paths and the
 weighting/interleaving/classification-only generators have been retired. Their
 completed artifacts and frozen source remain in the October 30 suite. The
